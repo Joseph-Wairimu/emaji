@@ -2,10 +2,18 @@ from rest_framework import permissions
 from .models import SiteAssignment, Role
 
 
+
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role.name == 'SUPER_ADMIN'
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
 
+        role = getattr(user, "role", None)
+        if role is None:
+            return False
+
+        return role.name == "SUPER_ADMIN"
 
 class IsSiteManagerForSite(permissions.BasePermission):
     def has_permission(self, request, view):
