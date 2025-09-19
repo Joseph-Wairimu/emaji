@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+ENV DJANGO_SETTINGS_MODULE=billing_project.settings
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
