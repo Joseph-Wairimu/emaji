@@ -20,6 +20,11 @@ services:
     ports:
       -  "8080:8000"
     environment:
+      - POSTGRES_DB=meter_billing
+      - POSTGRES_USER=water_user
+      - POSTGRES_PASSWORD=password1234
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - DATABASE_URL=postgres://water_user:password1234@db:5432/meter_billing
       - ADMIN_EMAIL=admin@example.com
       - ADMIN_PASSWORD=admin123
