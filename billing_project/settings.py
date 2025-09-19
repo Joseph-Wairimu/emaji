@@ -1,4 +1,5 @@
 import os
+from decouple import config
 from pathlib import Path
 from decouple import config
 
@@ -51,7 +52,17 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'billing_project.wsgi.application'
-
+print("Full Environment Variables:")
+for key, value in os.environ.items():
+    print(f"{key}: {value}")
+print("Resolved Database Config:")
+print({
+    "NAME": config("POSTGRES_DB"),
+    "USER": config("POSTGRES_USER"),
+    "PASSWORD": config("POSTGRES_PASSWORD"),
+    "HOST": config("POSTGRES_HOST", default="localhost"),
+    "PORT": config("POSTGRES_PORT", default="5432")
+})
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
