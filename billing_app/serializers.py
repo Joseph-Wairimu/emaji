@@ -32,7 +32,7 @@ class SiteAssignmentSerializer(serializers.ModelSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     latest_billing = serializers.SerializerMethodField()
     site = serializers.CharField(source='site.name', read_only=True)
-
+    site_id = serializers.UUIDField(source='site.id', read_only=True)
     class Meta:
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
@@ -52,6 +52,7 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 class MeterSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
+    site_id = serializers.UUIDField(source='site.id', read_only=True)
     class Meta:
         model = Meter
         fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status']
@@ -131,6 +132,8 @@ class PaymentLogSerializer(serializers.ModelSerializer):
 class ReadingLogSerializer(serializers.ModelSerializer):
     meter = serializers.CharField(source='meter.meter_number', read_only=True)
     customer = serializers.CharField(source='customer.first_name', read_only=True)
+    customer_id = serializers.CharField(source='customer.id', read_only=True)
+    meter_id = serializers.CharField(source='meter.id', read_only=True)
     class Meta:
         model = ReadingLog
         fields = ['id', 'customer', 'meter', 'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note']
