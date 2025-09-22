@@ -131,8 +131,7 @@ class BillingRecord(models.Model):
 
 class PaymentLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    billing_record = models.ForeignKey(BillingRecord, on_delete=models.SET_NULL, null=True, blank=True)
+    billing_record = models.ForeignKey(BillingRecord, on_delete=models.CASCADE, related_name="payments")
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2)
     payment_method = models.CharField(max_length=50)
     transaction_reference = models.CharField(max_length=100, unique=True)
@@ -142,13 +141,12 @@ class PaymentLog(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Payment {self.amount_paid} by {self.customer}"
+        return f"Payment {self.amount_paid} for Billing {self.billing_record.id}"
 
 
 class ReadingLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    meter = models.ForeignKey(Meter, on_delete=models.CASCADE)
+    billing_record = models.ForeignKey(BillingRecord, on_delete=models.CASCADE, related_name="readings")
     previous_reading = models.DecimalField(max_digits=10, decimal_places=2)
     new_reading = models.DecimalField(max_digits=10, decimal_places=2)
     recorded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
@@ -157,4 +155,4 @@ class ReadingLog(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Reading {self.new_reading} for {self.customer}"
+        return f"Reading {self.new_reading} for Billing {self.billing_record.id}"

@@ -116,37 +116,42 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
 
 class PaymentLogSerializer(serializers.ModelSerializer):
-    customer= serializers.CharField(source='customer.first_name', read_only=True)
-    customer_id = serializers.CharField(source='customer.id', read_only=True)
+    billing_record_id = serializers.UUIDField(source='billing_record.id', read_only=True)
+    customer = serializers.CharField(source='billing_record.customer.first_name', read_only=True)
+
     class Meta:
         model = PaymentLog
-        fields = ['id', 'customer', 'billing_record', 'amount_paid', 'payment_method',
-                  'transaction_reference', 'payment_date', 'created_by', 'created_at','customer_id']
+        fields = [
+            'id', 'billing_record', 'billing_record_id', 'customer',
+            'amount_paid', 'payment_method', 'transaction_reference',
+            'payment_date', 'created_by', 'created_at'
+        ]
 
     @transaction.atomic
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         payment = super().create(validated_data)
 
-        # Update billing record balance
-        if payment.billing_record:
-            billing = payment.billing_record
-            billing.amount_paid += payment.amount_paid
-            billing.balance -= payment.amount_paid
-            billing.payment_status = 'PAID' if billing.balance == 0 else 'PARTIAL'
-            billing.save()
+        billing = payment.billing_record
+        billing.amount_paid += payment.amount_paid
+        billing.balance -= payment.amount_paid
+        billing.payment_status = 'PAID' if billing.balance <= 0 else 'PARTIAL'
+        billing.save()
 
         return payment
 
 
 class ReadingLogSerializer(serializers.ModelSerializer):
-    meter = serializers.CharField(source='meter.meter_number', read_only=True)
-    customer = serializers.CharField(source='customer.first_name', read_only=True)
-    customer_id = serializers.CharField(source='customer.id', read_only=True)
-    meter_id = serializers.CharField(source='meter.id', read_only=True)
+    billing_record_id = serializers.UUIDField(source='billing_record.id', read_only=True)
+    customer = serializers.CharField(source='billing_record.customer.first_name', read_only=True)
+    meter = serializers.CharField(source='billing_record.meter.meter_number', read_only=True)
+
     class Meta:
         model = ReadingLog
-        fields = ['id', 'customer', 'meter', 'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note','customer_id','meter_id']
+        fields = [
+            'id', 'billing_record', 'billing_record_id', 'customer', 'meter',
+            'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note'
+        ]
 
     def create(self, validated_data):
         validated_data['recorded_by'] = self.context['request'].user
