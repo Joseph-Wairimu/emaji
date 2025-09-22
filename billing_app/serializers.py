@@ -36,7 +36,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
-                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing']
+                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id']
 
     def get_latest_billing(self, obj):
         latest = obj.billingrecord_set.order_by('-reading_date').first()
@@ -55,7 +55,7 @@ class MeterSerializer(serializers.ModelSerializer):
     site_id = serializers.UUIDField(source='site.id', read_only=True)
     class Meta:
         model = Meter
-        fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status']
+        fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status','site_id']
 
 
 class UnitPriceSerializer(serializers.ModelSerializer):
@@ -136,7 +136,7 @@ class ReadingLogSerializer(serializers.ModelSerializer):
     meter_id = serializers.CharField(source='meter.id', read_only=True)
     class Meta:
         model = ReadingLog
-        fields = ['id', 'customer', 'meter', 'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note']
+        fields = ['id', 'customer', 'meter', 'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note','customer_id','meter_id']
 
     def create(self, validated_data):
         validated_data['recorded_by'] = self.context['request'].user
