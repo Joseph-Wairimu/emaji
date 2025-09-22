@@ -84,11 +84,18 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'amount_due', 'unit_price_used', 'balance', 'payment_status',
             'created_by', 'created_at', 'meter', 'meter_id'
-        ] 
+        ]
 
     def validate(self, data):
         current_reading = data.get('current_reading', self.instance.current_reading if self.instance else None)
         past_reading = data.get('past_reading', self.instance.past_reading if self.instance else None)
+
+        customer = data.get('customer') or (self.instance.customer if self.instance else None)
+        if customer and past_reading is None:
+            last_billing = customer.billingrecord_set.order_by('-reading_date').first()
+            if last_billing:
+                past_reading = last_billing.current_reading
+                data['past_reading'] = past_reading 
 
         if current_reading is not None and past_reading is not None and current_reading < past_reading:
             raise serializers.ValidationError("Current reading cannot be less than past reading.")
@@ -99,6 +106,17 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         request_user = self.context['request'].user
         validated_data['created_by'] = request_user
 
+        customer = validated_data['customer']
+        meter = customer.meter_set.first()
+        if not meter:
+            raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+        validated_data['meter'] = meter
+
+        existing_billing = customer.billingrecord_set.order_by('-reading_date').first()
+
+        if existing_billing:
+            return self.update(existing_billing, validated_data)
+
         reading_date = validated_data.get('reading_date', timezone.now())
         unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by('-effective_date').first()
         if not unit_price:
@@ -108,10 +126,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data['amount_due'] = consumption * unit_price.unit_price
         validated_data['unit_price_used'] = unit_price.unit_price
 
-        previous_billing = validated_data['customer'].billingrecord_set.order_by('-reading_date').first()
-        previous_balance = previous_billing.balance if previous_billing else Decimal('0.00')
-
-        validated_data['balance'] = previous_balance + validated_data['amount_due'] - validated_data.get('amount_paid', 0)
+        validated_data['balance'] = validated_data['amount_due'] - validated_data.get('amount_paid', 0)
         validated_data['payment_status'] = (
             'PAID' if validated_data['balance'] <= 0 else
             'PARTIAL' if validated_data.get('amount_paid', 0) > 0 else
@@ -132,7 +147,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             PaymentLog.objects.create(
                 billing_record=billing,
                 amount_paid=billing.amount_paid,
-                payment_method="Manual",  
+                payment_method="Manual",
                 transaction_reference=f"AUTO-{uuid.uuid4().hex[:8]}",
                 created_by=request_user
             )
@@ -144,6 +159,13 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         request_user = self.context['request'].user
         old_current_reading = instance.current_reading
         old_amount_paid = instance.amount_paid
+
+        if "customer" in validated_data:
+            customer = validated_data["customer"]
+            meter = customer.meter_set.first()
+            if not meter:
+                raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+            validated_data["meter"] = meter
 
         updated_billing = super().update(instance, validated_data)
 
