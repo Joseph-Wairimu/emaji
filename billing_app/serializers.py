@@ -69,7 +69,6 @@ class UnitPriceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UnitPrice
         fields = ['id', 'unit_price', 'effective_date']
-
 class BillingRecordSerializer(serializers.ModelSerializer):
     meter = serializers.CharField(source='meter.meter_number', read_only=True)
     meter_id = serializers.UUIDField(source='meter.id', read_only=True)
@@ -113,7 +112,6 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data['meter'] = meter
 
         existing_billing = customer.billingrecord_set.order_by('-reading_date').first()
-
         if existing_billing:
             return self.update(existing_billing, validated_data)
 
@@ -125,7 +123,6 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         consumption = validated_data['current_reading'] - validated_data['past_reading']
         validated_data['amount_due'] = consumption * unit_price.unit_price
         validated_data['unit_price_used'] = unit_price.unit_price
-
         validated_data['balance'] = validated_data['amount_due'] - validated_data.get('amount_paid', 0)
         validated_data['payment_status'] = (
             'PAID' if validated_data['balance'] <= 0 else
@@ -160,12 +157,23 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         old_current_reading = instance.current_reading
         old_amount_paid = instance.amount_paid
 
-        if "customer" in validated_data:
-            customer = validated_data["customer"]
-            meter = customer.meter
-            if not meter:
-                raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
-            validated_data["meter"] = meter
+        customer = validated_data.get("customer", instance.customer)
+        meter = customer.meter
+        if not meter:
+            raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+        validated_data["meter"] = meter
+
+        current_reading = validated_data.get("current_reading", instance.current_reading)
+        past_reading = validated_data.get("past_reading", instance.past_reading)
+
+        reading_date = validated_data.get('reading_date', instance.reading_date)
+        unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by('-effective_date').first()
+        if not unit_price:
+            raise serializers.ValidationError("No unit price available for the given reading date.")
+
+        consumption = current_reading - past_reading
+        validated_data["amount_due"] = consumption * unit_price.unit_price
+        validated_data["unit_price_used"] = unit_price.unit_price
 
         updated_billing = super().update(instance, validated_data)
 
@@ -197,6 +205,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         updated_billing.save()
 
         return updated_billing
+
 
 
 class PaymentLogSerializer(serializers.ModelSerializer):
