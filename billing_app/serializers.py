@@ -81,9 +81,12 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             'amount_due', 'amount_paid', 'balance', 'unit_price_used',
             'payment_status', 'created_by', 'created_at', 'meter_id'
         ]
+        read_only_fields = [
+            'amount_due', 'unit_price_used', 'balance', 'payment_status',
+            'created_by', 'created_at', 'meter', 'meter_id'
+        ] 
 
     def validate(self, data):
-        # Ensure current reading is >= past reading
         current_reading = data.get('current_reading', self.instance.current_reading if self.instance else None)
         past_reading = data.get('past_reading', self.instance.past_reading if self.instance else None)
 
