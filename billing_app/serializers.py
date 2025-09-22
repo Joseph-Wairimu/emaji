@@ -24,19 +24,25 @@ class SiteSerializer(serializers.ModelSerializer):
 
 
 class SiteAssignmentSerializer(serializers.ModelSerializer):
+    site = serializers.CharField(source='site.name', read_only=True)
+    site_id = serializers.UUIDField(source='site.id', read_only=True)
+    user = serializers.CharField(source='user.email', read_only=True)
+    user_id = serializers.UUIDField(source='user.id', read_only=True)
     class Meta:
         model = SiteAssignment
-        fields = ['id', 'user', 'site']
+        fields = ['id', 'user', 'site','site_id','user_id']
 
 
 class CustomerSerializer(serializers.ModelSerializer):
     latest_billing = serializers.SerializerMethodField()
     site = serializers.CharField(source='site.name', read_only=True)
     site_id = serializers.UUIDField(source='site.id', read_only=True)
+    meter= serializers.CharField(source='meter.meter_number', read_only=True)
+    meter_id = serializers.UUIDField(source='meter.id', read_only=True)
     class Meta:
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
-                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id']
+                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id','meter_id']
 
     def get_latest_billing(self, obj):
         latest = obj.billingrecord_set.order_by('-reading_date').first()
@@ -65,10 +71,12 @@ class UnitPriceSerializer(serializers.ModelSerializer):
 
 
 class BillingRecordSerializer(serializers.ModelSerializer):
+    meter= serializers.CharField(source='meter.meter_number', read_only=True)
+    meter_id = serializers.UUIDField(source='meter.id', read_only=True)
     class Meta:
         model = BillingRecord
         fields = ['id', 'customer', 'meter', 'past_reading', 'current_reading', 'reading_date',
-                  'amount_due', 'amount_paid', 'balance', 'unit_price_used', 'payment_status', 'created_by', 'created_at']
+                  'amount_due', 'amount_paid', 'balance', 'unit_price_used', 'payment_status', 'created_by', 'created_at','meter_id']
 
     def validate(self, data):
         if data['current_reading'] < data['past_reading']:
@@ -108,10 +116,12 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
 
 class PaymentLogSerializer(serializers.ModelSerializer):
+    customer= serializers.CharField(source='customer.first_name', read_only=True)
+    customer_id = serializers.CharField(source='customer.id', read_only=True)
     class Meta:
         model = PaymentLog
         fields = ['id', 'customer', 'billing_record', 'amount_paid', 'payment_method',
-                  'transaction_reference', 'payment_date', 'created_by', 'created_at']
+                  'transaction_reference', 'payment_date', 'created_by', 'created_at','customer_id']
 
     @transaction.atomic
     def create(self, validated_data):
