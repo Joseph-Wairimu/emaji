@@ -93,17 +93,17 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     filterset_fields = ['customer', 'meter', 'reading_date', 'payment_status']
 
 
-class PaymentLogViewSet(viewsets.ModelViewSet):
+class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaymentLog.objects.all()
     serializer_class = PaymentLogSerializer
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['customer', 'payment_date']
+    filterset_fields = ['billing_record', 'payment_date']
 
 
-class ReadingLogViewSet(viewsets.ModelViewSet):
+class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = ReadingLog.objects.all()
     serializer_class = ReadingLogSerializer
     permission_classes = [IsAuthenticated, IsAdmin | IsMeterReaderForSite]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['customer', 'meter', 'recorded_at']
+    filterset_fields = ['billing_record', 'recorded_at']
