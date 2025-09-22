@@ -129,6 +129,8 @@ class PaymentLogSerializer(serializers.ModelSerializer):
 
 
 class ReadingLogSerializer(serializers.ModelSerializer):
+    meter = serializers.CharField(source='meter.meter_number', read_only=True)
+    customer = serializers.CharField(source='customer.first_name', read_only=True)
     class Meta:
         model = ReadingLog
         fields = ['id', 'customer', 'meter', 'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note']
