@@ -107,7 +107,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data['created_by'] = request_user
 
         customer = validated_data['customer']
-        meter = customer.meter_set.first()
+        meter = customer.meter
         if not meter:
             raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
         validated_data['meter'] = meter
@@ -162,7 +162,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
         if "customer" in validated_data:
             customer = validated_data["customer"]
-            meter = customer.meter_set.first()
+            meter = customer.meter
             if not meter:
                 raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
             validated_data["meter"] = meter
