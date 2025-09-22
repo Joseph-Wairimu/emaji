@@ -31,6 +31,7 @@ class SiteAssignmentSerializer(serializers.ModelSerializer):
 
 class CustomerSerializer(serializers.ModelSerializer):
     latest_billing = serializers.SerializerMethodField()
+    site = serializers.CharField(source='site.name', read_only=True)
 
     class Meta:
         model = Customer
@@ -50,6 +51,7 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 
 class MeterSerializer(serializers.ModelSerializer):
+    site = serializers.CharField(source='site.name', read_only=True)
     class Meta:
         model = Meter
         fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status']
