@@ -159,7 +159,6 @@ class BillingRecordSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request_user = self.context["request"].user
 
-        # Preserve old values
         old_current_reading = instance.current_reading
         old_amount_due = instance.amount_due
         old_amount_paid = instance.amount_paid
@@ -171,13 +170,18 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data["meter"] = meter
 
         new_current_reading = validated_data.get("current_reading", old_current_reading)
+        if new_current_reading == old_current_reading and validated_data["amount_paid"] == 0:
+            raise serializers.ValidationError("Amount paid cannot be zero when current reading is unchanged.")
 
         # Ensure reading never decreases
         if new_current_reading < old_current_reading:
             raise serializers.ValidationError({"current_reading": "Current reading cannot be less than existing reading."})
-
-        # Set past reading to old current reading
-        validated_data["past_reading"] = old_current_reading
+        
+        validated_data["amount_paid"]=old_amount_paid + validated_data["amount_paid"]
+        
+        # Set past reading to old current reading 
+        if new_current_reading != old_current_reading:
+           validated_data["past_reading"] = old_current_reading
 
         reading_date = validated_data.get("reading_date", instance.reading_date)
         unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by("-effective_date").first()

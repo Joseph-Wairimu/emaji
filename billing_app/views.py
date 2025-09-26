@@ -38,7 +38,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
-    # permission_classes = [IsAdmin]
+    #permission_classes = [IsAdmin]
 
 
 class SiteViewSet(viewsets.ModelViewSet):
