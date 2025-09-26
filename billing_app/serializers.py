@@ -44,6 +44,9 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
                   'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id','meter_id']
+        read_only_fields = [
+           'site_id','meter_id'
+        ]
 
     def get_latest_billing(self, obj):
         latest = obj.billingrecord_set.order_by('-reading_date').first()
