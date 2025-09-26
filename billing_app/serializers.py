@@ -26,9 +26,9 @@ class SiteSerializer(serializers.ModelSerializer):
 
 class SiteAssignmentSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
-    site_id = serializers.UUIDField(source='site.id', read_only=True)
+    site_id =serializers.UUIDField(write_only=True)
     user = serializers.CharField(source='user.email', read_only=True)
-    user_id = serializers.UUIDField(source='user.id', read_only=True)
+    user_id = serializers.UUIDField(write_only=True)
     class Meta:
         model = SiteAssignment
         fields = ['id', 'user', 'site','site_id','user_id']
