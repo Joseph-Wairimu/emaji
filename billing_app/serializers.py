@@ -32,6 +32,10 @@ class SiteAssignmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = SiteAssignment
         fields = ['id', 'user', 'site','site_id','user_id']
+        read_only_fields = [
+           'site',
+           'user',
+        ]
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -62,10 +66,14 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 class MeterSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
-    site_id = serializers.UUIDField(source='site.id', read_only=True)
+    site_id = serializers.UUIDField(write_only=True)
+    
     class Meta:
         model = Meter
         fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status','site_id']
+        read_only_fields = [
+            'site'
+        ]
 
 
 class UnitPriceSerializer(serializers.ModelSerializer):
