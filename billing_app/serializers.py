@@ -108,7 +108,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         fields = [
             "id", "customer", "meter", "past_reading", "current_reading", "reading_date",
             "amount_due", "amount_paid", "balance", "unit_price_used",
-            "payment_status", "created_by", "created_at", "meter_id"
+            "payment_status", "created_by", "created_at", "meter_id","customer_name"
         ]
         read_only_fields = [
             "amount_due", "unit_price_used", "balance", "payment_status",
