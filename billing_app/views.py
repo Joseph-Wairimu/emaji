@@ -91,8 +91,7 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['customer', 'meter', 'reading_date', 'payment_status']
-    def get_http_method_names(self):
-        return ['get', 'post']
+    http_method_names = ['get', 'post']
 
 
 class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
