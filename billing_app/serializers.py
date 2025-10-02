@@ -101,6 +101,7 @@ class UnitPriceSerializer(serializers.ModelSerializer):
 class BillingRecordSerializer(serializers.ModelSerializer):
     meter = serializers.CharField(source="meter.meter_number", read_only=True)
     meter_id = serializers.UUIDField(source="meter.id", read_only=True)
+    customer_name = serializers.CharField(source="customer.first_name", read_only=True)
 
     class Meta:
         model = BillingRecord
@@ -111,7 +112,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "amount_due", "unit_price_used", "balance", "payment_status",
-            "created_by", "created_at", "meter", "meter_id"
+            "created_by", "created_at", "meter", "meter_id","customer_name"
         ]
 
     def validate(self, data):
