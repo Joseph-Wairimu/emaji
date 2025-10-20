@@ -11,6 +11,19 @@ from .serializers import (
 )
 from .permissions import IsAdmin, IsSiteManagerForSite, IsMeterReaderForSite
 
+def get_queryset(self):
+    user = self.request.user
+
+    if user.role and user.role.name.upper() == "SUPER_ADMIN":
+        return super().get_queryset()
+
+    assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+
+    if user.role and user.role.name.upper() in ["site_manager", "meter_reader"]:
+        return self.queryset.filter(site_id__in=assigned_sites)
+
+    return self.queryset.none()
+
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -67,6 +80,14 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+        
+    def get_queryset(self):
+        user = self.request.user
+        if user.role and user.role.name.upper() == "SUPER_ADMIN":
+            return Customer.objects.all()
+        assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+        return Customer.objects.filter(site_id__in=assigned_sites)
+        
 
 
 class MeterViewSet(viewsets.ModelViewSet):
@@ -75,6 +96,13 @@ class MeterViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['site', 'status']
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role and user.role.name.upper() == "SUPER_ADMIN":
+            return Meter.objects.all()
+        assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+        return Meter.objects.filter(site_id__in=assigned_sites)
 
 
 class UnitPriceViewSet(viewsets.ModelViewSet):
@@ -92,7 +120,13 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['customer', 'meter', 'reading_date', 'payment_status']
     http_method_names = ['get', 'post']
-
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role and user.role.name.upper() == "SUPER_ADMIN":
+            return BillingRecord.objects.all()
+        assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+        return BillingRecord.objects.filter(customer__site_id__in=assigned_sites)
 
 class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaymentLog.objects.all()
@@ -100,6 +134,14 @@ class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['billing_record', 'payment_date']
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role and user.role.name.upper() == "SUPER_ADMIN":
+            return PaymentLog.objects.all()
+        assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+        return PaymentLog.objects.filter(billing_record__customer__site_id__in=assigned_sites)
+
 
 
 class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -108,3 +150,11 @@ class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin | IsMeterReaderForSite]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['billing_record', 'recorded_at']
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role and user.role.name.upper() == "SUPER_ADMIN":
+            return ReadingLog.objects.all()
+        assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
+        return ReadingLog.objects.filter(billing_record__customer__site_id__in=assigned_sites)
+
