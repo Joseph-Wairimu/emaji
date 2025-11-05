@@ -27,6 +27,34 @@ services:
     volumes:
       - .:/app
       - ./.env:/app/.env
+  backup:
+    image: postgres:15
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:ro
+      - ./db_backups:/backups
+      - ./backup-scripts:/scripts
+    entrypoint: ["/scripts/backup.sh"]
+
+  cron:
+    image: alpine
+    volumes:
+      - ./backup-scripts:/scripts
+      - ./db_backups:/backups
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      sh -c "
+        mkdir -p /var/log &&
+        echo '0 0 * * * docker compose run --rm backup >> /var/log/cron.log 2>&1' | crontab - &&
+        echo 'Cron service started. Logs will appear in /var/log/cron.log' &&
+        crond -f
+      "
+
+
 
 volumes:
   postgres_data:
