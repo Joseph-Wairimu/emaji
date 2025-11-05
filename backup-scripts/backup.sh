@@ -1,3 +1,4 @@
+#!/bin/bash
 set -e
 
 export PGPASSWORD=$POSTGRES_PASSWORD
@@ -14,4 +15,3 @@ echo "[$(date)] Backup completed: $BACKUP_FILE"
 
 find "$BACKUP_DIR" -type f -name "*.sql" -mtime +7 -delete
 echo "Old backups deleted (older than 7 days)"
-
