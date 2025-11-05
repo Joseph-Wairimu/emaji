@@ -66,6 +66,11 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
                   'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id','meter_id']
+        extra_kwargs = {
+            'email': {'required': False, 'allow_blank': True},
+            'plot_no': {'required': False, 'allow_blank': True},
+            'court_name': {'required': False, 'allow_blank': True},
+        }
         read_only_fields = [
            'site','meter'
         ]
