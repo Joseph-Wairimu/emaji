@@ -89,7 +89,6 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 class MeterSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
-    site_id = serializers.UUIDField(write_only=True)
     
     class Meta:
         model = Meter
