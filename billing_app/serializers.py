@@ -8,10 +8,16 @@ from django.utils import timezone
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
+    role = serializers.CharField(source='role.name', read_only=True)
+    role_id =serializers.UUIDField()
+    
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'role', 'password']
+        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'role', 'password','role_id']
+        read_only_fields = [
+           'role',
+        ]
 
     def create(self, validated_data):
         password = validated_data.pop('password')
