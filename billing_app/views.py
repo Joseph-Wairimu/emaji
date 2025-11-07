@@ -10,6 +10,10 @@ from .serializers import (
     BillingRecordSerializer, PaymentLogSerializer, ReadingLogSerializer
 )
 from .permissions import IsAdmin, IsSiteManagerForSite, IsMeterReaderForSite
+from rest_framework.views import APIView
+from django.db.models import Sum, OuterRef, Subquery
+from decimal import Decimal
+
 
 def get_queryset(self):
     user = self.request.user
@@ -158,3 +162,62 @@ class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
         assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
         return ReadingLog.objects.filter(billing_record__customer__site_id__in=assigned_sites)
 
+
+class AnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if user.role and user.role.name.upper() != "SUPER_ADMIN":
+            assigned_sites = SiteAssignment.objects.filter(user=user).values_list("site_id", flat=True)
+            billing_records = BillingRecord.objects.filter(customer__site_id__in=assigned_sites)
+            customers = Customer.objects.filter(site_id__in=assigned_sites)
+        else:
+            billing_records = BillingRecord.objects.all()
+            customers = Customer.objects.all()
+
+        totals = billing_records.aggregate(
+            total_due=Sum("amount_due"),
+        )
+        expected_amount = totals["total_due"] or Decimal("0.00")
+
+        payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
+        payments_agg = payment_qs.aggregate(total_paid_raw=Sum("amount_paid"))
+        total_paid_raw = payments_agg["total_paid_raw"] or Decimal("0.00")
+
+        if total_paid_raw <= expected_amount:
+            applied_paid = total_paid_raw
+            unpaid_amount = expected_amount - applied_paid
+            overpayment = Decimal("0.00")
+        else:
+            applied_paid = expected_amount
+            unpaid_amount = Decimal("0.00")
+            overpayment = total_paid_raw - expected_amount
+
+        total_bills = billing_records.count()
+        total_customers = customers.count()
+
+        latest_billing = BillingRecord.objects.filter(customer=OuterRef("pk")).order_by("-reading_date")
+        customers_with_debt = customers.annotate(
+            latest_balance=Subquery(latest_billing.values("balance")[:1])
+        ).filter(latest_balance__gt=0).count()
+
+        customers_paid = customers.annotate(
+            latest_status=Subquery(latest_billing.values("payment_status")[:1])
+        ).filter(latest_status="PAID").count()
+
+        payment_completion_rate = (applied_paid / expected_amount * 100) if expected_amount > 0 else Decimal("0.00")
+
+        return Response({
+            "expected_amount": str(round(expected_amount, 2)),
+            "total_amount_paid_raw": str(round(total_paid_raw, 2)),   
+            # "total_amount_paid": str(round(applied_paid, 2)),        
+            "unpaid_amount": str(round(unpaid_amount, 2)),
+            "overpayment": str(round(overpayment, 2)),
+            "total_bills": total_bills,
+            "total_customers": total_customers,
+            "customers_with_debt": customers_with_debt,
+            "total_paid_customers": customers_paid,
+            "payment_completion_rate": f"{round(payment_completion_rate, 2)}%"
+        })
