@@ -215,7 +215,8 @@ class AnalyticsView(APIView):
 
         return Response({
             "expected_amount": str(round(expected_amount, 2)),
-            "total_amount_paid_raw": str(round(total_paid_raw, 2)),   
+            "total_amount_paid_raw": str(round(total_paid_raw, 2)),  
+            "total_amount_to_be_paid": str(round(expected_amount - total_paid_raw, 2)),
             # "total_amount_paid": str(round(applied_paid, 2)),        
             "unpaid_amount": str(round(unpaid_amount, 2)),
             "overpayment": str(round(overpayment, 2)),
