@@ -182,7 +182,7 @@ class AnalyticsView(APIView):
             customers = Customer.objects.all()
 
         totals = billing_records.aggregate(
-            total_due=Sum("amount_due"),
+            total_due=Sum("balance"),
         )
         expected_amount = totals["total_due"] or Decimal("0.00")
 
