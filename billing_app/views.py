@@ -7,13 +7,13 @@ from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
     CustomerSerializer, MeterSerializer, UnitPriceSerializer,
-    BillingRecordSerializer, PaymentLogSerializer, ReadingLogSerializer
+    BillingRecordSerializer, PaymentLogSerializer, ReadingLogSerializer,CustomTokenObtainPairSerializer
 )
 from .permissions import IsAdmin, IsSiteManagerForSite, IsMeterReaderForSite
 from rest_framework.views import APIView
 from django.db.models import Sum, OuterRef, Subquery
 from decimal import Decimal
-
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 def get_queryset(self):
     user = self.request.user
@@ -29,6 +29,10 @@ def get_queryset(self):
     return self.queryset.none()
 
 
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+    
+    
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer

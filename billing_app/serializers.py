@@ -4,8 +4,28 @@ from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice
 from django.db import transaction
 from decimal import Decimal
 from django.utils import timezone
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
+
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+
+        token['email'] = user.email
+        token['role'] = user.role.name if user.role else None 
+
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        data['email'] = self.user.email
+        data['role'] = self.user.role.name if self.user.role else None
+        return data
+    
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
     role = serializers.CharField(source='role.name', read_only=True)
