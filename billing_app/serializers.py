@@ -272,13 +272,16 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         if new_current_reading < old_current_reading:
             raise serializers.ValidationError({"current_reading": "Current reading cannot be less than existing reading."})
         
-        validated_data["current_amount_paid"] = validated_data["amount_paid"]
         validated_data["previous_balance"] = instance.balance 
-        validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
 
         if new_current_reading != old_current_reading:
+            validated_data["current_amount_paid"] = validated_data["amount_paid"]
             validated_data["past_reading"] = old_current_reading
-
+        else: 
+             validated_data["current_amount_paid"] = validated_data["amount_paid"] + instance.current_amount_paid   
+             
+        validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
+      
         reading_date = validated_data.get("reading_date", instance.reading_date)
         unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by("-effective_date").first()
         if not unit_price:
