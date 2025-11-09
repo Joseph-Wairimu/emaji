@@ -151,11 +151,20 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        
         if data.get("amount_paid") is not None:
             try:
                 data["amount_paid"] = float(data["amount_paid"]) * -1
             except (TypeError, ValueError):
                 pass
+
+        key_name = "previous_balance" if "previous_balance" in data else "previous_balance"
+        if data.get(key_name) is not None:
+            try:
+                data[key_name] = float(data[key_name]) * -1
+            except (TypeError, ValueError):
+                pass
+
         return data
 
     def validate(self, data):
