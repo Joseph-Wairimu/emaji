@@ -143,6 +143,19 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             "amount_due", "unit_price_used", "balance", "payment_status",
             "created_by", "created_at", "meter", "meter_id","customer_name"
         ]
+        
+    def to_representation(self, instance):
+        """
+        Invert the amount_paid value (make positive → negative, negative → positive)
+        when returning the serialized data.
+        """
+        data = super().to_representation(instance)
+        if data.get("amount_paid") is not None:
+            try:
+                data["amount_paid"] = float(data["amount_paid"]) * -1
+            except (TypeError, ValueError):
+                pass
+        return data
 
     def validate(self, data):
         current_reading = data.get("current_reading", self.instance.current_reading if self.instance else None)
