@@ -183,7 +183,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         consumption = validated_data["current_reading"] - validated_data["past_reading"]
         validated_data["amount_due"] = consumption * unit_price.unit_price
         validated_data["unit_price_used"] = unit_price.unit_price
-        validated_data["balance"] = validated_data["amount_due"] + validated_data.get("amount_paid", 0)
+        validated_data["balance"] = validated_data["amount_due"] - validated_data.get("amount_paid", 0)
         validated_data["payment_status"] = (
             "PAID" if validated_data["balance"] <= 0 else
             "PARTIAL" if validated_data.get("amount_paid", 0) > 0 else
@@ -274,7 +274,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
                 created_by=request_user
             )
 
-        updated_billing.balance = updated_billing.amount_due + updated_billing.amount_paid
+        updated_billing.balance = updated_billing.amount_due - updated_billing.amount_paid
         updated_billing.payment_status = (
             "PAID" if updated_billing.balance <= 0 else
             "PARTIAL" if updated_billing.amount_paid > 0 else
