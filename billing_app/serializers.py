@@ -289,6 +289,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data["unit_price_used"] = unit_price.unit_price
 
         validated_data["previous_balance"] = instance.balance - validated_data["amount_paid"]
+        validated_data["current_amount_paid"] = validated_data["amount_paid"]
         validated_data["current_reading_amount"] = new_amount_due_increment
 
         updated_billing = super().update(instance, validated_data)

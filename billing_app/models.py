@@ -113,6 +113,7 @@ class BillingRecord(models.Model):
     reading_date = models.DateTimeField(default=timezone.now)
     amount_due = models.DecimalField(max_digits=10, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    current_amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     balance = models.DecimalField(max_digits=10, decimal_places=2)
     previous_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     current_reading_amount = models.DecimalField(max_digits=10, decimal_places=2,default=0)
