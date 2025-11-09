@@ -1,3 +1,4 @@
+from datetime import timedelta
 import uuid
 from rest_framework import serializers
 from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog
@@ -127,6 +128,8 @@ class UnitPriceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UnitPrice
         fields = ['id', 'unit_price', 'effective_date']
+        
+
 class BillingRecordSerializer(serializers.ModelSerializer):
     meter = serializers.CharField(source="meter.meter_number", read_only=True)
     meter_id = serializers.UUIDField(source="meter.id", read_only=True)
@@ -137,18 +140,16 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         fields = [
             "id", "customer", "meter", "past_reading", "current_reading", "reading_date",
             "amount_due", "amount_paid", "balance", "unit_price_used",
-            "payment_status", "created_by", "created_at", "meter_id","customer_name"
+            "payment_status", "created_by", "created_at", "meter_id",
+            "customer_name", "previous_balance", "current_reading_amount"
         ]
         read_only_fields = [
             "amount_due", "unit_price_used", "balance", "payment_status",
-            "created_by", "created_at", "meter", "meter_id","customer_name"
+            "created_by", "created_at", "meter", "meter_id",
+            "customer_name", "previous_balance", "current_reading_amount"
         ]
-        
+
     def to_representation(self, instance):
-        """
-        Invert the amount_paid value (make positive → negative, negative → positive)
-        when returning the serialized data.
-        """
         data = super().to_representation(instance)
         if data.get("amount_paid") is not None:
             try:
@@ -170,6 +171,20 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
         if current_reading is not None and past_reading is not None and current_reading < past_reading:
             raise serializers.ValidationError("Current reading cannot be less than past reading.")
+
+        if customer and data.get("reading_date"):
+            reading_date = data["reading_date"]
+            start_of_month = reading_date.replace(day=1)
+            end_of_month = (start_of_month + timedelta(days=32)).replace(day=1)
+            existing_reading = BillingRecord.objects.filter(
+                customer=customer,
+                reading_date__gte=start_of_month,
+                reading_date__lt=end_of_month
+            ).exclude(id=self.instance.id if self.instance else None)
+            if existing_reading.exists():
+                raise serializers.ValidationError(
+                    "A reading has already been recorded for this customer this month."
+                )
 
         return data
 
@@ -202,6 +217,9 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             "PARTIAL" if validated_data.get("amount_paid", 0) > 0 else
             "UNPAID"
         )
+
+        validated_data["previous_balance"] = existing_billing.balance if existing_billing else 0
+        validated_data["current_reading_amount"] = validated_data["amount_due"]
 
         billing = super().create(validated_data)
 
@@ -242,31 +260,30 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         if new_current_reading == old_current_reading and validated_data["amount_paid"] == 0:
             raise serializers.ValidationError("Amount paid cannot be zero when current reading is unchanged.")
 
-        # Ensure reading never decreases
         if new_current_reading < old_current_reading:
             raise serializers.ValidationError({"current_reading": "Current reading cannot be less than existing reading."})
-        
-        validated_data["amount_paid"]=old_amount_paid + validated_data["amount_paid"]
-        
-        # Set past reading to old current reading 
+
+        validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
+
         if new_current_reading != old_current_reading:
-           validated_data["past_reading"] = old_current_reading
+            validated_data["past_reading"] = old_current_reading
 
         reading_date = validated_data.get("reading_date", instance.reading_date)
         unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by("-effective_date").first()
         if not unit_price:
             raise serializers.ValidationError("No unit price available for the given reading date.")
 
-        # Calculate new consumption increment
         consumption_increment = new_current_reading - old_current_reading
         new_amount_due_increment = consumption_increment * unit_price.unit_price
 
         validated_data["amount_due"] = old_amount_due + new_amount_due_increment
         validated_data["unit_price_used"] = unit_price.unit_price
 
+        validated_data["previous_balance"] = instance.balance
+        validated_data["current_reading_amount"] = new_amount_due_increment
+
         updated_billing = super().update(instance, validated_data)
 
-        # Log reading change
         if new_current_reading != old_current_reading:
             ReadingLog.objects.create(
                 billing_record=updated_billing,
@@ -276,7 +293,6 @@ class BillingRecordSerializer(serializers.ModelSerializer):
                 note="Reading updated"
             )
 
-        # Handle payments incrementally
         payment_delta = updated_billing.amount_paid - old_amount_paid
         if payment_delta > 0:
             PaymentLog.objects.create(

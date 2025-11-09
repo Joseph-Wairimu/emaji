@@ -114,6 +114,8 @@ class BillingRecord(models.Model):
     amount_due = models.DecimalField(max_digits=10, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     balance = models.DecimalField(max_digits=10, decimal_places=2)
+    privious_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    current_reading_amount = models.DecimalField(max_digits=10, decimal_places=2,default=0)
     unit_price_used = models.DecimalField(max_digits=10, decimal_places=2)
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUSES, default='UNPAID')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
