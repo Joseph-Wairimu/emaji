@@ -227,7 +227,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             "UNPAID"
         )
 
-        validated_data["previous_balance"] = existing_billing.balance if existing_billing else 0
+        validated_data["previous_balance"] = validated_data.get("amount_paid", 0)
         validated_data["current_reading_amount"] = validated_data["amount_due"]
 
         billing = super().create(validated_data)
@@ -288,7 +288,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         validated_data["amount_due"] = old_amount_due + new_amount_due_increment
         validated_data["unit_price_used"] = unit_price.unit_price
 
-        validated_data["previous_balance"] = instance.balance
+        validated_data["previous_balance"] = instance.balance - validated_data["amount_paid"]
         validated_data["current_reading_amount"] = new_amount_due_increment
 
         updated_billing = super().update(instance, validated_data)
