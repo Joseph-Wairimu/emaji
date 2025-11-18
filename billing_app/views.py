@@ -14,6 +14,10 @@ from rest_framework.views import APIView
 from django.db.models import Sum, OuterRef, Subquery
 from decimal import Decimal
 from rest_framework_simplejwt.views import TokenObtainPairView
+from django.db.models import Sum, Value
+from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast
+from django.db.models import DecimalField
 
 def get_queryset(self):
     user = self.request.user
@@ -181,24 +185,34 @@ class AnalyticsView(APIView):
             billing_records = BillingRecord.objects.all()
             customers = Customer.objects.all()
 
-        totals = billing_records.aggregate(
-            total_due=Sum("balance"),
-        )
-        expected_amount = totals["total_due"] or Decimal("0.00")
+        expected_amount = billing_records.filter(balance__gt=0).aggregate(
+                total_due=Sum("balance")
+            )["total_due"] or Decimal("0.00")
 
-        payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
-        payments_agg = payment_qs.aggregate(total_paid_raw=Sum("amount_paid"))
-        total_paid_raw = payments_agg["total_paid_raw"] or Decimal("0.00")
+        # payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
+        # payments_agg = payment_qs.aggregate(total_paid_raw=Sum("current_amount_paid"))
+        total_paid_raw = billing_records.filter(balance__gt=0).aggregate(
+                total_due=Sum("current_amount_paid")
+            )["total_due"] or Decimal("0.00")
 
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw
             unpaid_amount = expected_amount - applied_paid
-            overpayment = Decimal("0.00")
+            neg_balances = billing_records.annotate(
+                    balance_dec=Cast("balance", DecimalField(max_digits=12, decimal_places=2))
+                ).filter(balance_dec__lt=0).aggregate(
+                    total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
+                )["total"]
+
+
         else:
             applied_paid = expected_amount
             unpaid_amount = Decimal("0.00")
-            overpayment = total_paid_raw - expected_amount
-
+            neg_balances = billing_records.annotate(
+                    balance_dec=Cast("balance", DecimalField(max_digits=12, decimal_places=2))
+                ).filter(balance_dec__lt=0).aggregate(
+                    total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
+                )["total"]
         total_bills = billing_records.count()
         total_customers = customers.count()
 
@@ -219,7 +233,7 @@ class AnalyticsView(APIView):
             "total_amount_to_be_paid": str(round(expected_amount - total_paid_raw, 2)),
             # "total_amount_paid": str(round(applied_paid, 2)),        
             "unpaid_amount": str(round(unpaid_amount, 2)),
-            "overpayment": str(round(overpayment, 2)),
+            "overpayment": abs(neg_balances),
             "total_bills": total_bills,
             "total_customers": total_customers,
             "customers_with_debt": customers_with_debt,
