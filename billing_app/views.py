@@ -130,7 +130,7 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     serializer_class = BillingRecordSerializer
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['customer', 'meter', 'reading_date', 'payment_status']
+    filterset_fields = ['customer', 'meter','reading_date','updated_at','payment_status']
     http_method_names = ['get', 'post']
     
     def get_queryset(self):
