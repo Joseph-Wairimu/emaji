@@ -158,14 +158,14 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             except (TypeError, ValueError):
                 pass
 
-        key_name = "previous_balance" if "previous_balance" in data else "previous_balance"
-        if data.get(key_name) is not None:
-            try:
-                data[key_name] = float(data[key_name]) * -1
-            except (TypeError, ValueError):
-                pass
+        # key_name = "previous_balance" if "previous_balance" in data else "previous_balance"
+        # if data.get(key_name) is not None:
+        #     try:
+        #         data[key_name] = float(data[key_name]) * -1
+        #     except (TypeError, ValueError):
+        #         pass
 
-        return data
+        # return data
 
     def validate(self, data):
         current_reading = data.get("current_reading", self.instance.current_reading if self.instance else None)
