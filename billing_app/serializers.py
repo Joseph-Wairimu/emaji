@@ -165,7 +165,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         #     except (TypeError, ValueError):
         #         pass
 
-        # return data
+        return data
 
     def validate(self, data):
         current_reading = data.get("current_reading", self.instance.current_reading if self.instance else None)
