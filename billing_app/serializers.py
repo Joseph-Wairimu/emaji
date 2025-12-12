@@ -141,12 +141,12 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             "id", "customer", "meter", "past_reading", "current_reading", "reading_date",
             "amount_due", "amount_paid", "balance", "unit_price_used",
             "payment_status", "created_by", "created_at", "meter_id",
-            "customer_name", "previous_balance", "current_reading_amount","current_amount_paid"
+            "customer_name", "previous_balance", "current_reading_amount","current_amount_paid","updated_at"
         ]
         read_only_fields = [
             "amount_due", "unit_price_used", "balance", "payment_status",
             "created_by", "created_at", "meter", "meter_id",
-            "customer_name", "previous_balance", "current_reading_amount","current_amount_paid"
+            "customer_name", "previous_balance", "current_reading_amount","current_amount_paid","updated_at"
         ]
 
     def to_representation(self, instance):
