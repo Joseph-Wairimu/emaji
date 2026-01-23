@@ -18,6 +18,8 @@ from django.db.models import Sum, Value
 from django.db.models.functions import Coalesce
 from django.db.models.functions import Cast
 from django.db.models import DecimalField
+from django.utils import timezone
+now = timezone.now()
 
 def get_queryset(self):
     user = self.request.user
@@ -191,9 +193,13 @@ class AnalyticsView(APIView):
 
         # payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
         # payments_agg = payment_qs.aggregate(total_paid_raw=Sum("current_amount_paid"))
-        total_paid_raw = billing_records.filter(balance__gt=0).aggregate(
-                total_due=Sum("current_amount_paid")
-            )["total_due"] or Decimal("0.00")
+        total_paid_raw = billing_records.filter(
+                        balance__gt=0,
+                        updated_at__year=now.year,
+                        updated_at__month=now.month
+                    ).aggregate(
+                        total_due=Sum("current_amount_paid")
+                    )["total_due"] or Decimal("0.00")
 
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw

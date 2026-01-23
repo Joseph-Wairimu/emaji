@@ -320,9 +320,10 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         updated_billing.balance = updated_billing.amount_due - updated_billing.amount_paid
         updated_billing.payment_status = (
             "PAID" if updated_billing.balance <= 0 else
-            "PARTIAL" if updated_billing.amount_paid > 0 else
+            "PARTIAL" if updated_billing.balance > 0 and updated_billing.current_amount_paid > 0 else
             "UNPAID"
         )
+
         updated_billing.save()
 
         return updated_billing
