@@ -277,7 +277,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         
         if new_current_reading != old_current_reading:
             validated_data["past_reading"] = old_current_reading
-            validated_data["reading_date"] =timezone.now(),
+            validated_data["reading_date"] =timezone.now()
 
         validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
       
