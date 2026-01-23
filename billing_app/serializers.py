@@ -304,6 +304,7 @@ class BillingRecordSerializer(serializers.ModelSerializer):
                 previous_reading=old_current_reading,
                 new_reading=new_current_reading,
                 recorded_by=request_user,
+                reading_date=timezone.now(),
                 note="Reading updated"
             )
 

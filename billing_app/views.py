@@ -193,13 +193,22 @@ class AnalyticsView(APIView):
 
         # payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
         # payments_agg = payment_qs.aggregate(total_paid_raw=Sum("current_amount_paid"))
+   
+        start_of_month = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+
+        if now.month == 12:
+            end_of_month = start_of_month.replace(year=now.year + 1, month=1)
+        else:
+            end_of_month = start_of_month.replace(month=now.month + 1)
+
         total_paid_raw = billing_records.filter(
-                        balance__gt=0,
-                        updated_at__year=now.year,
-                        updated_at__month=now.month
-                    ).aggregate(
-                        total_due=Sum("current_amount_paid")
-                    )["total_due"] or Decimal("0.00")
+            updated_at__gte=start_of_month,
+            updated_at__lt=end_of_month
+        ).aggregate(
+            total_due=Sum("current_amount_paid")
+        )["total_due"] or Decimal("0.00")
 
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw
