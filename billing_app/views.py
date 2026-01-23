@@ -209,7 +209,20 @@ class AnalyticsView(APIView):
         ).aggregate(
             total_due=Sum("current_amount_paid")
         )["total_due"] or Decimal("0.00")
-
+        
+        total_consumption_current_month = billing_records.filter(
+            updated_at__gte=start_of_month,
+            updated_at__lt=end_of_month
+        ).aggregate(
+            total_due=Sum("current_reading")
+        )["total_due"] or Decimal("0.00")
+        total_consumption_current_month_units = total_consumption_current_month - billing_records.filter(
+            updated_at__gte=start_of_month,
+            updated_at__lt=end_of_month
+        ).aggregate(
+            total_due=Sum("past_reading")
+        )["total_due"] or Decimal("0.00")
+        
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw
             unpaid_amount = expected_amount - applied_paid
@@ -246,6 +259,7 @@ class AnalyticsView(APIView):
             "expected_amount": str(round(expected_amount, 2)),
             "total_amount_paid_raw": str(round(total_paid_raw, 2)),  
             "total_amount_to_be_paid": str(round(expected_amount , 2)),
+            "total_consumption_current_month_units": str(round(total_consumption_current_month_units , 2)),
             # "total_amount_paid": str(round(applied_paid, 2)),        
             "unpaid_amount": str(round(unpaid_amount, 2)),
             "overpayment": abs(neg_balances),
