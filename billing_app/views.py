@@ -216,12 +216,14 @@ class AnalyticsView(APIView):
         ).aggregate(
             total_due=Sum("current_reading")
         )["total_due"] or Decimal("0.00")
-        total_consumption_current_month_units = total_consumption_current_month - billing_records.filter(
+        
+        total_consumption_past_month =billing_records.filter(
             updated_at__gte=start_of_month,
             updated_at__lt=end_of_month
         ).aggregate(
             total_due=Sum("past_reading")
         )["total_due"] or Decimal("0.00")
+        total_consumption_current_month_units = total_consumption_current_month - total_consumption_past_month
         
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw
