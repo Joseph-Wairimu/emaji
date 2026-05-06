@@ -183,13 +183,16 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
         if customer and data.get("reading_date"):
             reading_date = data["reading_date"]
-            start_of_month = reading_date.replace(day=1)
+            start_of_month = reading_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             end_of_month = (start_of_month + timedelta(days=32)).replace(day=1)
+            # For POST requests self.instance is None, so find the customer's existing record to exclude it
+            existing_record = BillingRecord.objects.filter(customer=customer).order_by("-reading_date").first()
+            exclude_id = (self.instance or existing_record).id if (self.instance or existing_record) else None
             existing_reading = BillingRecord.objects.filter(
                 customer=customer,
                 reading_date__gte=start_of_month,
                 reading_date__lt=end_of_month
-            ).exclude(id=self.instance.id if self.instance else None)
+            ).exclude(id=exclude_id)
             if existing_reading.exists():
                 raise serializers.ValidationError(
                     "A reading has already been recorded for this customer this month."
@@ -277,7 +280,8 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         
         if new_current_reading != old_current_reading:
             validated_data["past_reading"] = old_current_reading
-            validated_data["reading_date"] =timezone.now()
+            if "reading_date" not in validated_data:
+                validated_data["reading_date"] = timezone.now()
 
         validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
       
