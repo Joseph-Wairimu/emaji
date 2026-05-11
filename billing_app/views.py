@@ -147,48 +147,50 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='download_statement',
             permission_classes=[IsAuthenticated, IsAdmin | IsSiteManagerForSite])
     def download_statement(self, request):
-        queryset = self.get_queryset().select_related('customer', 'meter')
+        accessible_billing = self.get_queryset().values_list('id', flat=True)
+
+        payment_qs = PaymentLog.objects.filter(
+            billing_record_id__in=accessible_billing
+        ).select_related(
+            'billing_record__customer', 'billing_record__meter'
+        )
 
         customer_id = request.query_params.get('customer')
         customers_param = request.query_params.get('customers')
 
         if customer_id:
-            queryset = queryset.filter(customer_id=customer_id)
+            payment_qs = payment_qs.filter(billing_record__customer_id=customer_id)
         elif customers_param:
             customer_ids = [cid.strip() for cid in customers_param.split(',') if cid.strip()]
-            queryset = queryset.filter(customer_id__in=customer_ids)
+            payment_qs = payment_qs.filter(billing_record__customer_id__in=customer_ids)
 
-        queryset = queryset.order_by(
-            'customer__last_name', 'customer__first_name', 'reading_date'
+        payment_qs = payment_qs.order_by(
+            'billing_record__customer__last_name',
+            'billing_record__customer__first_name',
+            'payment_date',
         )
 
         response = HttpResponse(content_type='text/csv')
-        filename = 'payment_statement.csv'
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['Content-Disposition'] = 'attachment; filename="payment_statement.csv"'
 
         writer = csv.writer(response)
         writer.writerow([
-            'Customer Name', 'Meter Number', 'Reading Date',
-            'Past Reading (m³)', 'Current Reading (m³)', 'Consumption (m³)',
-            'Unit Price', 'Amount Due', 'Amount Paid', 'Balance',
-            'Payment Status', 'Last Updated',
+            'Customer Name', 'Meter Number', 'Transaction Reference',
+            'Payment Date', 'Amount Paid', 'Payment Method',
+            'Billing Period',
         ])
 
-        for record in queryset:
-            consumption = record.current_reading - record.past_reading
+        for log in payment_qs:
+            billing = log.billing_record
+            customer = billing.customer
             writer.writerow([
-                f"{record.customer.first_name} {record.customer.last_name}",
-                record.meter.meter_number,
-                record.reading_date.strftime('%Y-%m-%d'),
-                record.past_reading,
-                record.current_reading,
-                consumption,
-                record.unit_price_used,
-                record.amount_due,
-                record.amount_paid,
-                record.balance,
-                record.payment_status,
-                record.updated_at.strftime('%Y-%m-%d %H:%M'),
+                f"{customer.first_name} {customer.last_name}",
+                billing.meter.meter_number,
+                log.transaction_reference,
+                log.payment_date.strftime('%Y-%m-%d %H:%M'),
+                log.amount_paid,
+                log.payment_method,
+                billing.reading_date.strftime('%Y-%m-%d'),
             ])
 
         return response
