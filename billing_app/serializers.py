@@ -337,16 +337,21 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
 class PaymentLogSerializer(serializers.ModelSerializer):
     billing_record_id = serializers.UUIDField(source='billing_record.id', read_only=True)
-    customer = serializers.CharField(source='billing_record.customer.first_name', read_only=True)
+    customer_id = serializers.UUIDField(source='billing_record.customer.id', read_only=True)
+    customer = serializers.SerializerMethodField()
+
+    def get_customer(self, obj):
+        c = obj.billing_record.customer
+        return f"{c.first_name} {c.last_name}"
 
     class Meta:
         model = PaymentLog
         fields = [
-            'id', 'billing_record_id', 'customer',
+            'id', 'billing_record_id', 'customer_id', 'customer',
             'amount_paid', 'payment_method', 'transaction_reference',
             'payment_date', 'created_by', 'created_at'
         ]
-        read_only_fields = fields  
+        read_only_fields = fields
 
 
 class ReadingLogSerializer(serializers.ModelSerializer):

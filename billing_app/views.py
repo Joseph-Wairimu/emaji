@@ -1,8 +1,10 @@
+import csv
 from rest_framework import viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django_filters.rest_framework import DjangoFilterBackend
+from django.http import HttpResponse
 from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
@@ -134,13 +136,62 @@ class BillingRecordViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['customer', 'meter','reading_date','updated_at','payment_status']
     http_method_names = ['get', 'post']
-    
+
     def get_queryset(self):
         user = self.request.user
         if user.role and user.role.name.upper() == "SUPER_ADMIN":
             return BillingRecord.objects.all()
         assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
         return BillingRecord.objects.filter(customer__site_id__in=assigned_sites)
+
+    @action(detail=False, methods=['get'], url_path='download_statement',
+            permission_classes=[IsAuthenticated, IsAdmin | IsSiteManagerForSite])
+    def download_statement(self, request):
+        queryset = self.get_queryset().select_related('customer', 'meter')
+
+        customer_id = request.query_params.get('customer')
+        customers_param = request.query_params.get('customers')
+
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+        elif customers_param:
+            customer_ids = [cid.strip() for cid in customers_param.split(',') if cid.strip()]
+            queryset = queryset.filter(customer_id__in=customer_ids)
+
+        queryset = queryset.order_by(
+            'customer__last_name', 'customer__first_name', 'reading_date'
+        )
+
+        response = HttpResponse(content_type='text/csv')
+        filename = 'payment_statement.csv'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        writer = csv.writer(response)
+        writer.writerow([
+            'Customer Name', 'Meter Number', 'Reading Date',
+            'Past Reading (m³)', 'Current Reading (m³)', 'Consumption (m³)',
+            'Unit Price', 'Amount Due', 'Amount Paid', 'Balance',
+            'Payment Status', 'Last Updated',
+        ])
+
+        for record in queryset:
+            consumption = record.current_reading - record.past_reading
+            writer.writerow([
+                f"{record.customer.first_name} {record.customer.last_name}",
+                record.meter.meter_number,
+                record.reading_date.strftime('%Y-%m-%d'),
+                record.past_reading,
+                record.current_reading,
+                consumption,
+                record.unit_price_used,
+                record.amount_due,
+                record.amount_paid,
+                record.balance,
+                record.payment_status,
+                record.updated_at.strftime('%Y-%m-%d %H:%M'),
+            ])
+
+        return response
 
 class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PaymentLog.objects.all()
