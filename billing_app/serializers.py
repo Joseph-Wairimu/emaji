@@ -282,19 +282,24 @@ class BillingRecordSerializer(serializers.ModelSerializer):
             validated_data["past_reading"] = old_current_reading
             if "reading_date" not in validated_data:
                 validated_data["reading_date"] = timezone.now()
+        else:
+            validated_data.pop("reading_date", None)
 
         validated_data["amount_paid"] = old_amount_paid + validated_data["amount_paid"]
-      
-        reading_date = validated_data.get("reading_date", instance.reading_date)
-        unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by("-effective_date").first()
-        if not unit_price:
-            raise serializers.ValidationError("No unit price available for the given reading date.")
 
         consumption_increment = new_current_reading - old_current_reading
-        new_amount_due_increment = consumption_increment * unit_price.unit_price
+
+        if consumption_increment > 0:
+            reading_date = validated_data.get("reading_date", instance.reading_date)
+            unit_price = UnitPrice.objects.filter(effective_date__lte=reading_date).order_by("-effective_date").first()
+            if not unit_price:
+                raise serializers.ValidationError("No unit price available for the given reading date.")
+            new_amount_due_increment = consumption_increment * unit_price.unit_price
+            validated_data["unit_price_used"] = unit_price.unit_price
+        else:
+            new_amount_due_increment = Decimal("0")
 
         validated_data["amount_due"] = old_amount_due + new_amount_due_increment
-        validated_data["unit_price_used"] = unit_price.unit_price
         validated_data["current_reading_amount"] = new_amount_due_increment
         # if new_current_reading != old_current_reading:
         #     validated_data["current_reading_amount"] = new_amount_due_increment
