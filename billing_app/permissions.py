@@ -17,7 +17,8 @@ class IsAdmin(permissions.BasePermission):
 
 class IsSiteManagerForSite(permissions.BasePermission):
     def has_permission(self, request, view):
-        if not request.user.is_authenticated or not request.user.role.name == 'site_manager':
+        role = getattr(request.user, 'role', None)
+        if not request.user.is_authenticated or role is None or role.name != 'site_manager':
             return False
         return True
 
@@ -31,7 +32,8 @@ class IsSiteManagerForSite(permissions.BasePermission):
 
 class IsMeterReaderForSite(permissions.BasePermission):
     def has_permission(self, request, view):
-        if not request.user.is_authenticated or not request.user.role.name == 'meter_reader':
+        role = getattr(request.user, 'role', None)
+        if not request.user.is_authenticated or role is None or role.name != 'meter_reader':
             return False
         return True
 
