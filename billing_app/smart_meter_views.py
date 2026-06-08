@@ -213,11 +213,16 @@ class SmartMeterStatusView(APIView):
                 balance_kes = str(
                     (wallet.balance_m3 * unit_price.unit_price).quantize(Decimal("0.01"))
                 )
+            # Use physical telemetry as the authoritative valve state
+            physical_valve_status = latest.valve_status or wallet.valve_status
+            if wallet.valve_status != physical_valve_status:
+                wallet.valve_status = physical_valve_status
+                wallet.save(update_fields=["valve_status"])
             data["prepaid"] = {
                 "customer_id": str(customer.id),
                 "balance_m3": str(wallet.balance_m3),
                 "balance_kes": balance_kes,
-                "valve_status": wallet.valve_status,
+                "valve_status": physical_valve_status,
                 "last_updated": wallet.updated_at,
             }
         except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
@@ -249,6 +254,17 @@ class PrepaidWalletView(APIView):
             balance_kes = str(
                 (wallet.balance_m3 * unit_price.unit_price).quantize(Decimal("0.01"))
             )
+
+        # Sync valve_status from latest telemetry if available
+        try:
+            latest_reading = customer.meter.smart_readings.first()
+            if latest_reading and latest_reading.valve_status:
+                physical_status = latest_reading.valve_status
+                if wallet.valve_status != physical_status:
+                    wallet.valve_status = physical_status
+                    wallet.save(update_fields=["valve_status"])
+        except Exception:
+            pass
 
         return Response({
             "customer_id": str(customer.id),
