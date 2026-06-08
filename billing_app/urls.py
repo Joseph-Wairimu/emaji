@@ -12,6 +12,9 @@ from .smart_meter_views import (
     PrepaidWalletView,
     PrepaidTopupView,
     ValveControlView,
+    SmartMeterCommandPendingView,
+    SmartMeterCommandUpdateView,
+    SmartMeterCommandAcknowledgeView,
 )
 
 router = DefaultRouter()
@@ -35,6 +38,11 @@ urlpatterns = [
     path('smart-meter/ingest/', SmartMeterIngestView.as_view(), name='smart-meter-ingest'),
     path('smart-meter/status/<str:meter_address>/', SmartMeterStatusView.as_view(), name='smart-meter-status'),
     path('smart-meter/valve/', ValveControlView.as_view(), name='smart-meter-valve'),
+
+    # Decoder-facing command queue endpoints (API key auth, no JWT)
+    path('smart-meter/commands/pending/<str:meter_address>/', SmartMeterCommandPendingView.as_view(), name='smart-meter-commands-pending'),
+    path('smart-meter/commands/<uuid:command_id>/update/', SmartMeterCommandUpdateView.as_view(), name='smart-meter-commands-update'),
+    path('smart-meter/commands/acknowledge/<str:meter_address>/', SmartMeterCommandAcknowledgeView.as_view(), name='smart-meter-commands-acknowledge'),
 
     # Prepaid wallet endpoints
     path('prepaid/topup/', PrepaidTopupView.as_view(), name='prepaid-topup'),

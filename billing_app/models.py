@@ -205,7 +205,12 @@ class PrepaidWallet(models.Model):
 
 class ValveCommand(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    STATUS_CHOICES = [('pending', 'Pending'), ('sent', 'Sent'), ('failed', 'Failed')]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('sent', 'Sent'),
+        ('acknowledged', 'Acknowledged'),
+        ('failed', 'Failed'),
+    ]
     meter = models.ForeignKey(Meter, on_delete=models.CASCADE, related_name='valve_commands')
     action = models.CharField(max_length=20)
     reason = models.CharField(max_length=50)
@@ -213,6 +218,7 @@ class ValveCommand(models.Model):
     fengbo_response = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']

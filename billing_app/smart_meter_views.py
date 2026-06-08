@@ -58,18 +58,30 @@ def _to_m3(raw_value, unit: str) -> Decimal | None:
 
 def _send_valve_command(meter: Meter, action: str, reason: str, wallet: PrepaidWallet | None = None):
     cmd = ValveCommand.objects.create(meter=meter, action=action, reason=reason, status="pending")
-    try:
-        result = FengboCloudService().control_valve(meter.meter_address, action)
-        cmd.status = "sent"
-        cmd.fengbo_response = result
-        cmd.sent_at = timezone.now()
-        if wallet is not None:
-            wallet.valve_status = "closed" if action == "close" else "open"
-    except Exception as exc:
-        cmd.status = "failed"
-        cmd.fengbo_response = {"error": str(exc)}
-        cmd.sent_at = timezone.now()
-        logger.error("Valve command %s for %s failed: %s", action, meter.meter_address, exc)
+
+    if settings.FENGBO_API_URL:
+        # Try Fengbo Cloud API (for meters registered on Fengbo's cloud platform).
+        # If it fails or isn't configured, the command stays 'pending' and the
+        # self-hosted TCP decoder will pick it up on the meter's next upload.
+        try:
+            result = FengboCloudService().control_valve(meter.meter_address, action)
+            cmd.status = "sent"
+            cmd.fengbo_response = result
+            cmd.sent_at = timezone.now()
+            if wallet is not None:
+                wallet.valve_status = "closed" if action == "close" else "open"
+            logger.info("Valve %s sent via Fengbo Cloud API for %s", action, meter.meter_address)
+        except Exception as exc:
+            logger.warning(
+                "Fengbo Cloud API unavailable for %s — command queued for TCP decoder: %s",
+                meter.meter_address, exc,
+            )
+    else:
+        logger.info(
+            "ValveCommand '%s' queued for meter %s — decoder will send on next upload",
+            action, meter.meter_address,
+        )
+
     cmd.save()
 
 
@@ -363,3 +375,103 @@ class ValveControlView(APIView):
             wallet.save()
 
         return Response({"status": "ok", "action": action, "meter_address": meter_address})
+
+
+# ---------------------------------------------------------------------------
+# Decoder-facing command queue endpoints (SmartMeterKeyPermission, no JWT)
+# ---------------------------------------------------------------------------
+
+class SmartMeterCommandPendingView(APIView):
+    """
+    GET /api/smart-meter/commands/pending/<meter_address>/
+    Called by fengbo_decoder.py on each meter upload.
+    Returns the oldest pending valve command or {"command": null}.
+    """
+    permission_classes = [SmartMeterKeyPermission]
+    authentication_classes = []
+
+    def get(self, request, meter_address):
+        try:
+            meter = Meter.objects.get(meter_address=meter_address)
+        except Meter.DoesNotExist:
+            return Response({"command": None})
+
+        cmd = meter.valve_commands.filter(status="pending").order_by("created_at").first()
+        if not cmd:
+            return Response({"command": None})
+
+        return Response({
+            "command": {
+                "id": str(cmd.id),
+                "action": cmd.action,
+                "reason": cmd.reason,
+            }
+        })
+
+
+class SmartMeterCommandUpdateView(APIView):
+    """
+    POST /api/smart-meter/commands/<command_id>/update/
+    Called by fengbo_decoder.py after sending valve frame.
+    Body: { "status": "sent" | "failed" }
+    """
+    permission_classes = [SmartMeterKeyPermission]
+    authentication_classes = []
+
+    def post(self, request, command_id):
+        try:
+            cmd = ValveCommand.objects.get(id=command_id)
+        except ValveCommand.DoesNotExist:
+            return Response({"error": "Command not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        new_status = request.data.get("status")
+        if new_status not in ("sent", "failed"):
+            return Response(
+                {"error": "status must be 'sent' or 'failed'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cmd.status = new_status
+        cmd.sent_at = timezone.now()
+        cmd.save()
+        return Response({"status": "ok"})
+
+
+class SmartMeterCommandAcknowledgeView(APIView):
+    """
+    POST /api/smart-meter/commands/acknowledge/<meter_address>/
+    Called by fengbo_decoder.py when meter returns function code 0x03
+    (parameter setting result), confirming the valve command was executed.
+    Marks the most recently sent command as acknowledged and syncs wallet
+    valve_status to reflect the physical state.
+    """
+    permission_classes = [SmartMeterKeyPermission]
+    authentication_classes = []
+
+    def post(self, request, meter_address):
+        try:
+            meter = Meter.objects.get(meter_address=meter_address)
+        except Meter.DoesNotExist:
+            return Response({"status": "unknown_meter"})
+
+        cmd = meter.valve_commands.filter(status="sent").order_by("-sent_at").first()
+        if not cmd:
+            return Response({"status": "no_sent_command"})
+
+        cmd.status = "acknowledged"
+        cmd.acknowledged_at = timezone.now()
+        cmd.save()
+
+        # Sync wallet valve_status to what the meter physically confirmed
+        try:
+            customer = Customer.objects.get(meter=meter)
+            wallet = customer.wallet
+            wallet.valve_status = "closed" if cmd.action == "close" else "open"
+            wallet.save()
+        except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
+            pass
+
+        logger.info(
+            "Valve command '%s' acknowledged by meter %s", cmd.action, meter_address
+        )
+        return Response({"status": "ok", "acknowledged_action": cmd.action})
