@@ -117,14 +117,30 @@ class CustomerSerializer(serializers.ModelSerializer):
 class MeterSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
     site_id = serializers.UUIDField(write_only=True)
+    customer_id = serializers.SerializerMethodField()
+    customer_name = serializers.SerializerMethodField()
+
+    def get_customer_id(self, obj):
+        try:
+            return str(obj.customer.id)
+        except Exception:
+            return None
+
+    def get_customer_name(self, obj):
+        try:
+            c = obj.customer
+            return f"{c.first_name} {c.last_name}"
+        except Exception:
+            return None
 
     class Meta:
         model = Meter
         fields = [
             'id', 'meter_number', 'meter_type', 'meter_address', 'imei',
             'site', 'installed_at', 'status', 'site_id',
+            'customer_id', 'customer_name',
         ]
-        read_only_fields = ['site']
+        read_only_fields = ['site', 'customer_id', 'customer_name']
 
 
 class UnitPriceSerializer(serializers.ModelSerializer):
