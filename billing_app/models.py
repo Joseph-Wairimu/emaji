@@ -78,6 +78,8 @@ class Meter(models.Model):
     ]
     meter_number = models.CharField(max_length=50, unique=True)
     meter_type = models.CharField(max_length=20, choices=METER_TYPES)
+    meter_address = models.CharField(max_length=50, blank=True, null=True, unique=True)
+    imei = models.CharField(max_length=50, blank=True, null=True)
     site = models.ForeignKey(Site, on_delete=models.CASCADE)
     installed_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('INACTIVE', 'Inactive')])
@@ -159,3 +161,61 @@ class ReadingLog(models.Model):
 
     def __str__(self):
         return f"Reading {self.new_reading} for Billing {self.billing_record.id}"
+
+
+class SmartMeterReading(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    meter = models.ForeignKey(Meter, on_delete=models.CASCADE, related_name='smart_readings')
+    meter_address = models.CharField(max_length=50, db_index=True)
+    reading_time = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField()
+    total_flow_m3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    total_flow_raw = models.DecimalField(max_digits=18, decimal_places=3, null=True, blank=True)
+    total_flow_unit = models.CharField(max_length=20, blank=True, null=True)
+    valve_status = models.CharField(max_length=20, blank=True, null=True)
+    battery_voltage_v = models.FloatField(null=True, blank=True)
+    csq = models.IntegerField(null=True, blank=True)
+    no_water_alarm = models.BooleanField(null=True, blank=True)
+    low_battery_alarm = models.BooleanField(null=True, blank=True)
+    reverse_alarm = models.BooleanField(null=True, blank=True)
+    water_temperature_c = models.FloatField(null=True, blank=True)
+    instantaneous_flow = models.IntegerField(null=True, blank=True)
+    raw_payload = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-reading_time', '-received_at']
+        indexes = [models.Index(fields=['meter_address', '-reading_time'])]
+
+    def __str__(self):
+        return f"Reading {self.meter_address} @ {self.reading_time}"
+
+
+class PrepaidWallet(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name='wallet')
+    balance_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
+    last_known_flow_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
+    valve_status = models.CharField(max_length=20, default='unknown')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Wallet: {self.customer} — {self.balance_m3} m³"
+
+
+class ValveCommand(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    STATUS_CHOICES = [('pending', 'Pending'), ('sent', 'Sent'), ('failed', 'Failed')]
+    meter = models.ForeignKey(Meter, on_delete=models.CASCADE, related_name='valve_commands')
+    action = models.CharField(max_length=20)
+    reason = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    fengbo_response = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"ValveCommand {self.action} {self.meter} ({self.status})"

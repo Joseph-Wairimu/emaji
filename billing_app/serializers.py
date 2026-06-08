@@ -120,7 +120,10 @@ class MeterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Meter
-        fields = ['id', 'meter_number', 'meter_type', 'site', 'installed_at', 'status', 'site_id']
+        fields = [
+            'id', 'meter_number', 'meter_type', 'meter_address', 'imei',
+            'site', 'installed_at', 'status', 'site_id',
+        ]
         read_only_fields = ['site']
 
 

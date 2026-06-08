@@ -116,3 +116,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Smart meter / Fengbo Cloud integration
+FENGBO_API_URL = config('FENGBO_API_URL', default='')
+FENGBO_AREA_NAME = config('FENGBO_AREA_NAME', default='')
+FENGBO_CHECK_CODE = config('FENGBO_CHECK_CODE', default='')
+SMART_METER_API_KEY = config('SMART_METER_API_KEY', default='')
