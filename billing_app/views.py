@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.http import HttpResponse
+from django.db import models as django_models
 from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
@@ -13,7 +14,7 @@ from .serializers import (
 )
 from .permissions import IsAdmin, IsSiteManagerForSite, IsMeterReaderForSite
 from rest_framework.views import APIView
-from django.db.models import Sum, OuterRef, Subquery
+from django.db.models import Sum, OuterRef, Subquery, Q, F, ExpressionWrapper
 from decimal import Decimal
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.db.models import Sum, Value
@@ -21,7 +22,6 @@ from django.db.models.functions import Coalesce
 from django.db.models.functions import Cast
 from django.db.models import DecimalField
 from django.utils import timezone
-now = timezone.now()
 
 def get_queryset(self):
     user = self.request.user
@@ -200,15 +200,17 @@ class PaymentLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PaymentLogSerializer
     permission_classes = [IsAuthenticated, IsAdmin | IsSiteManagerForSite]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['billing_record', 'payment_date']
-    
+    filterset_fields = ['billing_record', 'payment_date', 'billing_type']
+
     def get_queryset(self):
         user = self.request.user
         if user.role and user.role.name.upper() == "SUPER_ADMIN":
             return PaymentLog.objects.all()
         assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
-        return PaymentLog.objects.filter(billing_record__customer__site_id__in=assigned_sites)
-
+        return PaymentLog.objects.filter(
+            Q(billing_record__customer__site_id__in=assigned_sites) |
+            Q(billing_record__isnull=True, customer__site_id__in=assigned_sites)
+        )
 
 
 class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -216,86 +218,91 @@ class ReadingLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ReadingLogSerializer
     permission_classes = [IsAuthenticated, IsAdmin | IsMeterReaderForSite]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['billing_record', 'recorded_at']
-    
+    filterset_fields = ['billing_record', 'recorded_at', 'billing_type']
+
     def get_queryset(self):
         user = self.request.user
         if user.role and user.role.name.upper() == "SUPER_ADMIN":
             return ReadingLog.objects.all()
         assigned_sites = SiteAssignment.objects.filter(user=user).values_list('site_id', flat=True)
-        return ReadingLog.objects.filter(billing_record__customer__site_id__in=assigned_sites)
+        return ReadingLog.objects.filter(
+            Q(billing_record__customer__site_id__in=assigned_sites) |
+            Q(billing_record__isnull=True, customer__site_id__in=assigned_sites)
+        )
 
 
 class AnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _month_boundaries(year, month):
+        """Return (start, end) datetime for a given year/month."""
+        now = timezone.now()
+        start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        if month == 12:
+            end = start.replace(year=year + 1, month=1)
+        else:
+            end = start.replace(month=month + 1)
+        return start, end
+
     def get(self, request):
+        now = timezone.now()  # fresh per-request timestamp — never use module-level now
         user = request.user
 
         if user.role and user.role.name.upper() != "SUPER_ADMIN":
             assigned_sites = SiteAssignment.objects.filter(user=user).values_list("site_id", flat=True)
             billing_records = BillingRecord.objects.filter(customer__site_id__in=assigned_sites)
             customers = Customer.objects.filter(site_id__in=assigned_sites)
+            payment_logs = PaymentLog.objects.filter(
+                Q(billing_record__customer__site_id__in=assigned_sites) |
+                Q(billing_record__isnull=True, customer__site_id__in=assigned_sites)
+            )
         else:
             billing_records = BillingRecord.objects.all()
             customers = Customer.objects.all()
+            payment_logs = PaymentLog.objects.all()
 
-        expected_amount = billing_records.filter(balance__gt=0).aggregate(
-                total_due=Sum("balance")
-            )["total_due"] or Decimal("0.00")
-
-        # payment_qs = PaymentLog.objects.filter(billing_record__in=billing_records)
-        # payments_agg = payment_qs.aggregate(total_paid_raw=Sum("current_amount_paid"))
-   
-        start_of_month = now.replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-
+        # ── Current month boundaries ────────────────────────────────────
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         if now.month == 12:
             end_of_month = start_of_month.replace(year=now.year + 1, month=1)
         else:
             end_of_month = start_of_month.replace(month=now.month + 1)
 
-        total_paid_raw = billing_records.filter(
-            updated_at__gte=start_of_month,
-            updated_at__lt=end_of_month
-        ).aggregate(
-            total_due=Sum("current_amount_paid")
+        expected_amount = billing_records.filter(balance__gt=0).aggregate(
+            total_due=Sum("balance")
         )["total_due"] or Decimal("0.00")
-        
-        total_consumption_current_month = billing_records.filter(
-            updated_at__gte=start_of_month,
-            updated_at__lt=end_of_month
-        ).aggregate(
-            total_due=Sum("current_reading")
-        )["total_due"] or Decimal("0.00")
-        
-        total_consumption_past_month =billing_records.filter(
-            updated_at__gte=start_of_month,
-            updated_at__lt=end_of_month
-        ).aggregate(
-            total_due=Sum("past_reading")
-        )["total_due"] or Decimal("0.00")
-        total_consumption_current_month_units = total_consumption_current_month - total_consumption_past_month
-        
+
+        total_paid_raw = payment_logs.filter(
+            payment_date__gte=start_of_month,
+            payment_date__lt=end_of_month,
+        ).aggregate(total=Coalesce(Sum("amount_paid"), Value(Decimal("0"))))["total"]
+
+        current_month_records = billing_records.filter(
+            reading_date__gte=start_of_month,
+            reading_date__lt=end_of_month,
+        )
+        consumption_agg = current_month_records.aggregate(
+            current_sum=Coalesce(Sum("current_reading"), Value(Decimal("0"))),
+            past_sum=Coalesce(Sum("past_reading"), Value(Decimal("0"))),
+        )
+        total_consumption_current_month_units = (
+            consumption_agg["current_sum"] - consumption_agg["past_sum"]
+        )
+
+        neg_balances = billing_records.annotate(
+            balance_dec=Cast("balance", DecimalField(max_digits=12, decimal_places=2))
+        ).filter(balance_dec__lt=0).aggregate(
+            total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
+        )["total"]
+
         if total_paid_raw <= expected_amount:
             applied_paid = total_paid_raw
             unpaid_amount = expected_amount - applied_paid
-            neg_balances = billing_records.annotate(
-                    balance_dec=Cast("balance", DecimalField(max_digits=12, decimal_places=2))
-                ).filter(balance_dec__lt=0).aggregate(
-                    total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
-                )["total"]
-
-
         else:
             applied_paid = expected_amount
             unpaid_amount = Decimal("0.00")
-            neg_balances = billing_records.annotate(
-                    balance_dec=Cast("balance", DecimalField(max_digits=12, decimal_places=2))
-                ).filter(balance_dec__lt=0).aggregate(
-                    total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
-                )["total"]
+
         total_bills = billing_records.count()
         total_customers = customers.count()
 
@@ -308,19 +315,59 @@ class AnalyticsView(APIView):
             latest_status=Subquery(latest_billing.values("payment_status")[:1])
         ).filter(latest_status="PAID").count()
 
-        payment_completion_rate = (applied_paid / expected_amount * 100) if expected_amount > 0 else Decimal("0.00")
+        payment_completion_rate = (
+            (applied_paid / expected_amount * 100) if expected_amount > 0 else Decimal("0.00")
+        )
+
+        def _billed_for_qs(qs):
+            return qs.annotate(
+                cycle_billed=ExpressionWrapper(
+                    (F("current_reading") - F("past_reading")) * F("unit_price_used"),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                )
+            ).aggregate(
+                total=Coalesce(Sum("cycle_billed"), Value(Decimal("0")))
+            )["total"]
+
+        monthly_breakdown = []
+        year, month = now.year, now.month
+        for _ in range(7):
+            m_start, m_end = self._month_boundaries(year, month)
+            billed = _billed_for_qs(
+                billing_records.filter(reading_date__gte=m_start, reading_date__lt=m_end)
+            )
+            collected = payment_logs.filter(
+                payment_date__gte=m_start, payment_date__lt=m_end,
+            ).aggregate(
+                total=Coalesce(Sum("amount_paid"), Value(Decimal("0")))
+            )["total"]
+
+            monthly_breakdown.insert(0, {
+                "month": m_start.strftime("%b"),
+                "year": year,
+                "billed": float(round(billed, 2)),
+                "collected": float(round(collected, 2)),
+            })
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+
+        current_month_billed = _billed_for_qs(current_month_records)
 
         return Response({
             "expected_amount": str(round(expected_amount, 2)),
-            "total_amount_paid_raw": str(round(total_paid_raw, 2)),  
-            "total_amount_to_be_paid": str(round(expected_amount , 2)),
-            "total_consumption_current_month_units": str(round(total_consumption_current_month_units , 2)),
-            # "total_amount_paid": str(round(applied_paid, 2)),        
+            "total_amount_paid_raw": str(round(total_paid_raw, 2)),
+            "total_amount_to_be_paid": str(round(expected_amount, 2)),
+            "total_consumption_current_month_units": str(round(total_consumption_current_month_units, 2)),
             "unpaid_amount": str(round(unpaid_amount, 2)),
             "overpayment": abs(neg_balances),
             "total_bills": total_bills,
             "total_customers": total_customers,
             "customers_with_debt": customers_with_debt,
             "total_paid_customers": customers_paid,
-            "payment_completion_rate": f"{round(payment_completion_rate, 2)}%"
+            "payment_completion_rate": f"{round(payment_completion_rate, 2)}%",
+            "monthly_breakdown": monthly_breakdown,
+            "current_month_billed": str(round(current_month_billed, 2)),
+            "current_month_collected": str(round(total_paid_raw, 2)),
         })
