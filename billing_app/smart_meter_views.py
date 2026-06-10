@@ -1,5 +1,7 @@
 import logging
+import uuid
 from decimal import Decimal
+from datetime import timedelta
 from dateutil import parser as date_parser
 
 from django.conf import settings
@@ -14,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated, BasePermission
 from .models import (
     Meter, Customer, UnitPrice,
     SmartMeterReading, PrepaidWallet, ValveCommand,
+    ReadingLog, PaymentLog,
 )
 from .permissions import IsAdmin
 from .services.fengbo_cloud import FengboCloudService
@@ -83,6 +86,49 @@ def _send_valve_command(meter: Meter, action: str, reason: str, wallet: PrepaidW
         )
 
     cmd.save()
+
+
+def _snapshot_reading_log(meter: Meter, current_flow_m3: Decimal) -> None:
+    """
+    Create a ReadingLog entry for a smart meter at most once every 24 hours,
+    only when the cumulative flow has actually increased.
+    This is what surfaces smart meter readings in the /readings/ table.
+    """
+    try:
+        customer = Customer.objects.get(meter=meter)
+    except Customer.DoesNotExist:
+        return  # No customer assigned — skip
+
+    # At most one snapshot per 24-hour window per meter
+    last_log = ReadingLog.objects.filter(meter=meter).order_by('-recorded_at').first()
+    if last_log and (timezone.now() - last_log.recorded_at) < timedelta(hours=23):
+        return
+
+    prev_reading = last_log.new_reading if last_log else Decimal('0')
+
+    # Skip if there has been no meaningful increase (< 0.001 m³ = 1 litre)
+    if current_flow_m3 - prev_reading < Decimal('0.001'):
+        return
+
+    # Determine whether this is a prepaid or postpaid smart meter
+    try:
+        customer.wallet  # noqa: B018 — existence check
+        billing_type = 'PREPAID'
+    except PrepaidWallet.DoesNotExist:
+        billing_type = 'POSTPAID'
+
+    ReadingLog.objects.create(
+        meter=meter,
+        customer=customer,
+        billing_type=billing_type,
+        previous_reading=prev_reading,
+        new_reading=current_flow_m3,
+        note='Smart meter daily snapshot',
+    )
+    logger.info(
+        "ReadingLog snapshot created for meter %s: %.3f → %.3f m³ (%s)",
+        meter.meter_address, prev_reading, current_flow_m3, billing_type,
+    )
 
 
 def _run_prepaid_logic(meter: Meter, current_flow_m3: Decimal, reported_valve_status: str | None):
@@ -169,6 +215,7 @@ class SmartMeterIngestView(APIView):
 
         if total_flow_m3 is not None:
             _run_prepaid_logic(meter, total_flow_m3, payload.get("valve_status"))
+            _snapshot_reading_log(meter, total_flow_m3)
 
         return Response({"status": "ok", "reading_id": str(reading.id)}, status=status.HTTP_201_CREATED)
 
@@ -345,6 +392,17 @@ class PrepaidTopupView(APIView):
                     )
                 except Exception as exc:
                     logger.warning("Fengbo payment sync failed (non-fatal): %s", exc)
+
+        # Record the top-up as a PaymentLog so it appears in the payments table
+        PaymentLog.objects.create(
+            billing_record=None,
+            customer=customer,
+            billing_type='PREPAID',
+            amount_paid=amount_kes,
+            payment_method='Prepaid Top-Up',
+            transaction_reference=f"TOPUP-{uuid.uuid4().hex[:10].upper()}",
+            created_by=request.user,
+        )
 
         return Response({
             "status": "ok",

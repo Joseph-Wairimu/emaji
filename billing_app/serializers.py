@@ -360,33 +360,70 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
 
 class PaymentLogSerializer(serializers.ModelSerializer):
-    billing_record_id = serializers.UUIDField(source='billing_record.id', read_only=True)
-    customer_id = serializers.UUIDField(source='billing_record.customer.id', read_only=True)
+    billing_record_id = serializers.SerializerMethodField()
+    customer_id = serializers.SerializerMethodField()
     customer = serializers.SerializerMethodField()
 
+    def get_billing_record_id(self, obj):
+        return str(obj.billing_record_id) if obj.billing_record_id else None
+
+    def get_customer_id(self, obj):
+        # Prefer direct customer FK (prepaid), fall back to billing record's customer (postpaid)
+        if obj.customer_id:
+            return str(obj.customer_id)
+        if obj.billing_record_id:
+            return str(obj.billing_record.customer_id)
+        return None
+
     def get_customer(self, obj):
-        c = obj.billing_record.customer
-        return f"{c.first_name} {c.last_name}"
+        if obj.customer_id:
+            c = obj.customer
+            return f"{c.first_name} {c.last_name}"
+        if obj.billing_record_id:
+            c = obj.billing_record.customer
+            return f"{c.first_name} {c.last_name}"
+        return None
 
     class Meta:
         model = PaymentLog
         fields = [
             'id', 'billing_record_id', 'customer_id', 'customer',
             'amount_paid', 'payment_method', 'transaction_reference',
-            'payment_date', 'created_by', 'created_at'
+            'payment_date', 'created_by', 'created_at', 'billing_type',
         ]
         read_only_fields = fields
 
 
 class ReadingLogSerializer(serializers.ModelSerializer):
-    billing_record_id = serializers.UUIDField(source='billing_record.id', read_only=True)
-    customer = serializers.CharField(source='billing_record.customer.first_name', read_only=True)
-    meter = serializers.CharField(source='billing_record.meter.meter_number', read_only=True)
+    billing_record_id = serializers.SerializerMethodField()
+    customer = serializers.SerializerMethodField()
+    meter = serializers.SerializerMethodField()
+
+    def get_billing_record_id(self, obj):
+        return str(obj.billing_record_id) if obj.billing_record_id else None
+
+    def get_customer(self, obj):
+        # Prefer direct customer FK (smart meter snapshot), fall back to billing record's customer
+        if obj.customer_id:
+            c = obj.customer
+            return f"{c.first_name} {c.last_name}"
+        if obj.billing_record_id:
+            c = obj.billing_record.customer
+            return f"{c.first_name} {c.last_name}"
+        return None
+
+    def get_meter(self, obj):
+        if obj.meter_id:
+            return obj.meter.meter_number
+        if obj.billing_record_id:
+            return obj.billing_record.meter.meter_number
+        return None
 
     class Meta:
         model = ReadingLog
         fields = [
             'id', 'billing_record_id', 'customer', 'meter',
-            'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note'
+            'previous_reading', 'new_reading', 'recorded_by', 'recorded_at', 'note',
+            'billing_type',
         ]
-        read_only_fields = fields  
+        read_only_fields = fields
