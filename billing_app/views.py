@@ -296,12 +296,8 @@ class AnalyticsView(APIView):
             total=Coalesce(Sum("balance_dec"), Value(Decimal("0.00")))
         )["total"]
 
-        if total_paid_raw <= expected_amount:
-            applied_paid = total_paid_raw
-            unpaid_amount = expected_amount - applied_paid
-        else:
-            applied_paid = expected_amount
-            unpaid_amount = Decimal("0.00")
+        applied_paid = total_paid_raw
+        unpaid_amount = expected_amount
 
         total_bills = billing_records.count()
         total_customers = customers.count()
