@@ -122,3 +122,7 @@ FENGBO_API_URL = config('FENGBO_API_URL', default='')
 FENGBO_AREA_NAME = config('FENGBO_AREA_NAME', default='')
 FENGBO_CHECK_CODE = config('FENGBO_CHECK_CODE', default='')
 SMART_METER_API_KEY = config('SMART_METER_API_KEY', default='')
+
+
+# Card-swipe terminal integration
+CARD_TERMINAL_API_KEY = config('CARD_TERMINAL_API_KEY', default='')

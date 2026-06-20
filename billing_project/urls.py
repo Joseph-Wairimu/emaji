@@ -7,4 +7,6 @@ urlpatterns = [
     path('api/', include('billing_app.urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    # Card-swipe terminal protocol — no /api/ prefix, no JWT, CSRF-exempt
+    path('hxz/v1/', include('billing_app.urls_card_terminal')),
 ]

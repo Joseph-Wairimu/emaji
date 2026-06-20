@@ -16,6 +16,17 @@ from .smart_meter_views import (
     SmartMeterCommandUpdateView,
     SmartMeterCommandAcknowledgeView,
 )
+from .card_terminal_api_views import (
+    CardTerminalDeviceListView,
+    CardBindingListCreateView,
+    CardBindingDetailView,
+    CardTerminalTariffListCreateView,
+    CardTerminalTariffDetailView,
+    CardTerminalTransactionListView,
+    CardTerminalWalletView,
+    CardTerminalTopupView,
+    CardTerminalStatsView,
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet)
@@ -44,9 +55,20 @@ urlpatterns = [
     path('smart-meter/commands/<uuid:command_id>/update/', SmartMeterCommandUpdateView.as_view(), name='smart-meter-commands-update'),
     path('smart-meter/commands/acknowledge/<str:meter_address>/', SmartMeterCommandAcknowledgeView.as_view(), name='smart-meter-commands-acknowledge'),
 
-    # Prepaid wallet endpoints
+    # Prepaid wallet endpoints (Fengbo / m³ based)
     path('prepaid/topup/', PrepaidTopupView.as_view(), name='prepaid-topup'),
     path('prepaid/wallet/<uuid:customer_id>/', PrepaidWalletView.as_view(), name='prepaid-wallet'),
+
+    # Card terminal management API (JWT, frontend use)
+    path('card-terminal/devices/', CardTerminalDeviceListView.as_view(), name='ct-devices'),
+    path('card-terminal/bindings/', CardBindingListCreateView.as_view(), name='ct-bindings'),
+    path('card-terminal/bindings/<uuid:binding_id>/', CardBindingDetailView.as_view(), name='ct-binding-detail'),
+    path('card-terminal/tariffs/', CardTerminalTariffListCreateView.as_view(), name='ct-tariffs'),
+    path('card-terminal/tariffs/<uuid:tariff_id>/', CardTerminalTariffDetailView.as_view(), name='ct-tariff-detail'),
+    path('card-terminal/transactions/', CardTerminalTransactionListView.as_view(), name='ct-transactions'),
+    path('card-terminal/wallet/<uuid:customer_id>/', CardTerminalWalletView.as_view(), name='ct-wallet'),
+    path('card-terminal/topup/', CardTerminalTopupView.as_view(), name='ct-topup'),
+    path('card-terminal/stats/', CardTerminalStatsView.as_view(), name='ct-stats'),
 
     path('', include(router.urls)),
 ]

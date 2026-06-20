@@ -222,6 +222,8 @@ class PrepaidWallet(models.Model):
     balance_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     last_known_flow_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     valve_status = models.CharField(max_length=20, default='unknown')
+    # Card terminal balance (KES) — independent of Fengbo m³ balance
+    balance_kes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -250,3 +252,80 @@ class ValveCommand(models.Model):
 
     def __str__(self):
         return f"ValveCommand {self.action} {self.meter} ({self.status})"
+
+
+# ---------------------------------------------------------------------------
+# Card-swipe terminal models (HTTP/JSON protocol)
+# ---------------------------------------------------------------------------
+
+class CardTerminalDevice(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    device_number = models.CharField(max_length=50, unique=True)
+    iccid = models.CharField(max_length=50, blank=True)
+    name = models.CharField(max_length=100, blank=True)
+    site = models.ForeignKey(Site, on_delete=models.SET_NULL, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.device_number} ({self.name or 'unnamed'})"
+
+
+class CardBinding(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    card_no = models.CharField(max_length=50, unique=True)
+    customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name='card_binding')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.card_no} → {self.customer}"
+
+
+class CardTerminalTariff(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    rate_per_m3 = models.DecimalField(max_digits=10, decimal_places=4)
+    pulses_per_m3 = models.PositiveIntegerField(default=1000)
+    offline_limit_kes = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('10.00'))
+    charge_mode = models.PositiveSmallIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.name} — KES {self.rate_per_m3}/m³"
+
+
+class CardTerminalTransaction(models.Model):
+    MODE_CHOICES = [(0, 'Payment'), (1, 'Balance Inquiry')]
+    SOURCE_CHOICES = [('online', 'Online'), ('offline', 'Offline Upload')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order_no = models.CharField(max_length=60, unique=True)
+    device = models.ForeignKey(CardTerminalDevice, on_delete=models.SET_NULL, null=True, blank=True)
+    card_no = models.CharField(max_length=50, db_index=True)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True)
+    mode = models.PositiveSmallIntegerField(choices=MODE_CHOICES)
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='online')
+    amount_deducted_kes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    volume_consumed_units = models.PositiveIntegerField(default=0)
+    balance_after_kes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    is_successful = models.BooleanField(default=False)
+    failure_reason = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.order_no} — {self.card_no}"
+
+
+class CardTerminalWhitelistEntry(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    card_no = models.CharField(max_length=50, unique=True)
+    operation = models.PositiveSmallIntegerField(default=1)  # 1=add, 0=delete
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.card_no} ({'allow' if self.operation == 1 else 'deny'})"
