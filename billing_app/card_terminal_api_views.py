@@ -22,7 +22,7 @@ from .models import (
     PaymentLog,
     PrepaidWallet,
 )
-from .permissions import IsAdmin
+from .permissions import IsAdmin, IsStaff
 from .views_card_terminal import _upsert_whitelist
 
 logger = logging.getLogger(__name__)
@@ -188,10 +188,13 @@ class CardBindingDetailView(APIView):
 
 class CardTerminalTariffListCreateView(APIView):
     """
-    GET  /api/card-terminal/tariffs/ — list tariffs
-    POST /api/card-terminal/tariffs/ — create tariff
+    GET  /api/card-terminal/tariffs/ — list tariffs (any staff)
+    POST /api/card-terminal/tariffs/ — create tariff (admin only)
     """
-    permission_classes = [IsAuthenticated, IsAdmin]
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsStaff()]
+        return [IsAdmin()]
 
     def get(self, request):
         tariffs = CardTerminalTariff.objects.order_by('-is_active', 'name')

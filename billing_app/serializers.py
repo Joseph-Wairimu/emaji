@@ -89,10 +89,16 @@ class CustomerSerializer(serializers.ModelSerializer):
     site_id = serializers.UUIDField()
     meter= serializers.CharField(source='meter.meter_number', read_only=True)
     meter_id = serializers.UUIDField()
+    user_email = serializers.SerializerMethodField()
+
+    def get_user_email(self, obj):
+        return obj.user.email if obj.user_id else None
+
     class Meta:
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
-                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at', 'latest_billing','site_id','meter_id']
+                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at',
+                  'latest_billing', 'site_id', 'meter_id', 'user_email']
         extra_kwargs = {
             'email': {'required': False, 'allow_blank': True},
             'plot_no': {'required': False, 'allow_blank': True},

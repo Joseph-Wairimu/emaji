@@ -62,6 +62,10 @@ class Customer(models.Model):
     account_status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('SUSPENDED', 'Suspended')])
     site = models.ForeignKey(Site, on_delete=models.CASCADE)
     meter = models.OneToOneField('Meter', on_delete=models.SET_NULL, null=True, blank=True)
+    # Portal login — staff creates a User with role=CUSTOMER and links it here
+    user = models.OneToOneField(
+        'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='customer_profile'
+    )
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

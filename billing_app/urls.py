@@ -27,6 +27,13 @@ from .card_terminal_api_views import (
     CardTerminalTopupView,
     CardTerminalStatsView,
 )
+from .customer_portal_views import (
+    CustomerMeView,
+    CustomerBillingView,
+    CustomerTransactionsView,
+    CustomerTopupView,
+    CustomerCreateLoginView,
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet)
@@ -69,6 +76,15 @@ urlpatterns = [
     path('card-terminal/wallet/<uuid:customer_id>/', CardTerminalWalletView.as_view(), name='ct-wallet'),
     path('card-terminal/topup/', CardTerminalTopupView.as_view(), name='ct-topup'),
     path('card-terminal/stats/', CardTerminalStatsView.as_view(), name='ct-stats'),
+
+    # Customer portal (role=CUSTOMER JWT)
+    path('customer/me/', CustomerMeView.as_view(), name='customer-me'),
+    path('customer/billing/', CustomerBillingView.as_view(), name='customer-billing'),
+    path('customer/transactions/', CustomerTransactionsView.as_view(), name='customer-transactions'),
+    path('customer/topup/', CustomerTopupView.as_view(), name='customer-topup'),
+
+    # Staff: create/reset customer portal login
+    path('customers/<uuid:customer_id>/create-login/', CustomerCreateLoginView.as_view(), name='customer-create-login'),
 
     path('', include(router.urls)),
 ]
