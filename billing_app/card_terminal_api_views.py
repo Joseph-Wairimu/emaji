@@ -46,7 +46,7 @@ class CardTerminalDeviceSerializer(drf_serializers.ModelSerializer):
 
 class CardBindingSerializer(drf_serializers.ModelSerializer):
     customer_name = drf_serializers.SerializerMethodField()
-    customer_id = drf_serializers.UUIDField(write_only=True)
+    customer_id = drf_serializers.UUIDField()
 
     def get_customer_name(self, obj):
         return f'{obj.customer.first_name} {obj.customer.last_name}'
