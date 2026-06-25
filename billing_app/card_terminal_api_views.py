@@ -231,28 +231,144 @@ class CardTerminalWalletSerializer(drf_serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
+# Nuomiy response helpers
+# ---------------------------------------------------------------------------
+
+def _nuomiy_rows(resp: dict) -> list:
+    """
+    Extract the list of records from a Nuomiy paginated response.
+    Handles the three common Spring Boot response shapes:
+      { "rows": [...] }
+      { "data": { "list": [...] } }
+      { "data": [...] }
+    """
+    if isinstance(resp.get('rows'), list):
+        return resp['rows']
+    data = resp.get('data')
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ('list', 'rows', 'records'):
+            if isinstance(data.get(key), list):
+                return data[key]
+    return []
+
+
+def _first(*values):
+    """Return the first non-None, non-empty value from the candidates."""
+    for v in values:
+        if v is not None and v != '':
+            return v
+    return None
+
+
+def _normalize_nuomiy_device(d: dict, local_map: dict) -> dict:
+    """
+    Map a Nuomiy /device/devices record to the shape CardTerminalDevicesTable expects.
+    Confirmed response fields: deviceMac, deviceId, merchantName, onlineStatus, aliveTime.
+    local_map: { device_number -> CardTerminalDevice } for enriching site_name / last_seen_at.
+    """
+    # deviceMac is the physical device identifier (e.g. "I02MPLZF07")
+    device_number = str(d.get('deviceMac') or d.get('devCode') or d.get('deviceCode') or '')
+    local = local_map.get(device_number)
+    # onlineStatus: 1=online, 0=offline
+    is_active = int(d.get('onlineStatus', 0)) == 1
+    # aliveTime from Nuomiy is authoritative for last heartbeat; fall back to local
+    alive_time = d.get('aliveTime') or (local.last_seen_at.isoformat() if (local and local.last_seen_at) else None)
+    return {
+        'id': str(d.get('deviceId') or device_number),
+        'device_number': device_number,
+        'name': d.get('merchantName') or device_number,
+        'iccid': d.get('iccid') or d.get('simCardNo') or '',
+        'site_name': local.site.name if (local and local.site) else None,
+        'is_active': is_active,
+        'last_seen_at': alive_time,
+        'created_at': d.get('createTime') or d.get('createDate') or '',
+    }
+
+
+def _normalize_nuomiy_cardholder(c: dict, local_map: dict) -> dict:
+    """
+    Map a Nuomiy cardholder record to the shape CardBindingsTable expects.
+    local_map: { card_no -> CardBinding } for enriching customer_id and local id.
+    """
+    card_no = str(_first(
+        c.get('cardNumber'), c.get('cardNo'), c.get('physicalCardNo'), ''
+    ))
+    local = local_map.get(card_no)
+    card_status = str(_first(c.get('cardStatus'), c.get('status'), '1'))
+    return {
+        'id': str(local.id) if local else str(_first(c.get('id'), c.get('customerId'), '')),
+        'card_no': card_no,
+        'customer_name': _first(
+            c.get('customerName'), c.get('name'),
+            f'{local.customer.first_name} {local.customer.last_name}' if local else None,
+            '—',
+        ),
+        'customer_id': str(local.customer.id) if local else None,
+        'is_active': card_status == '1',
+        'nuomiy_customer_id': str(_first(c.get('id'), c.get('customerId'), '')),
+        'created_at': _first(
+            c.get('createTime'), c.get('createDate'), c.get('createdAt'),
+            local.created_at.isoformat() if local else '',
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Views
 # ---------------------------------------------------------------------------
 
 class CardTerminalDeviceListView(APIView):
-    """GET /api/card-terminal/devices/ — list all registered terminal devices."""
+    """
+    GET /api/card-terminal/devices/
+    Fetches device list from the Nuomiy cloud platform and enriches each
+    record with local heartbeat data (last_seen_at, site). Falls back to
+    local DB only if Nuomiy is unreachable or not configured.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        devices = CardTerminalDevice.objects.select_related('site').order_by('-last_seen_at')
-        return Response(CardTerminalDeviceSerializer(devices, many=True).data)
+        local_qs = CardTerminalDevice.objects.select_related('site').order_by('-last_seen_at')
+        local_map = {d.device_number: d for d in local_qs}
+
+        if settings.NUOMIY_APP_ID:
+            try:
+                from .services.nuomiy_cloud import NuomiyCloudService
+                resp = NuomiyCloudService().get_devices(page_size=100)
+                rows = _nuomiy_rows(resp)
+                if rows:
+                    return Response([_normalize_nuomiy_device(d, local_map) for d in rows])
+                logger.warning('Nuomiy get_devices returned empty rows — falling back to local DB')
+            except Exception as e:
+                logger.warning('Nuomiy get_devices unavailable (%s) — falling back to local DB', e)
+
+        return Response(CardTerminalDeviceSerializer(local_qs, many=True).data)
 
 
 class CardBindingListCreateView(APIView):
     """
-    GET  /api/card-terminal/bindings/ — list all card→customer bindings
-    POST /api/card-terminal/bindings/ — create a new binding
+    GET  /api/card-terminal/bindings/ — list card→customer bindings from Nuomiy
+    POST /api/card-terminal/bindings/ — create a new binding (local + Nuomiy sync)
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        bindings = CardBinding.objects.select_related('customer').order_by('-created_at')
-        return Response(CardBindingSerializer(bindings, many=True).data)
+        local_qs = CardBinding.objects.select_related('customer').order_by('-created_at')
+        local_map = {b.card_no: b for b in local_qs}
+
+        if settings.NUOMIY_APP_ID:
+            try:
+                from .services.nuomiy_cloud import NuomiyCloudService
+                resp = NuomiyCloudService().get_cardholders(page_size=100)
+                rows = _nuomiy_rows(resp)
+                if rows:
+                    return Response([_normalize_nuomiy_cardholder(c, local_map) for c in rows])
+                logger.warning('Nuomiy get_cardholders returned empty rows — falling back to local DB')
+            except Exception as e:
+                logger.warning('Nuomiy get_cardholders unavailable (%s) — falling back to local DB', e)
+
+        return Response(CardBindingSerializer(local_qs, many=True).data)
 
     def post(self, request):
         serializer = CardBindingSerializer(data=request.data)

@@ -152,7 +152,7 @@ SMART_METER_API_KEY = config('SMART_METER_API_KEY', default='')
 CARD_TERMINAL_API_KEY = config('CARD_TERMINAL_API_KEY', default='')
 
 # Nuomiy / IDMP merchant API
-NUOMIY_BASE_URL = config('NUOMIY_BASE_URL', default='https://ivmer.nuomiy.com/meropen')
+NUOMIY_BASE_URL = config('NUOMIY_BASE_URL', default='https://ivmer.nuomiy.com/api/meropen')
 NUOMIY_APP_ID = config('NUOMIY_APP_ID', default='')
 NUOMIY_PRIVATE_KEY = config('NUOMIY_PRIVATE_KEY', default='')
 # Platform-specific IDs — confirm with /basesetting/cardtypes, /depts, /transactions

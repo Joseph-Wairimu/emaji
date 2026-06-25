@@ -126,23 +126,40 @@ class NuomiyCloudService:
         full["sign"] = generate_sign(full, self.private_key)
         return full
 
+    def _parse(self, resp) -> dict:
+        """Parse response body; raise with a clear message if not JSON."""
+        if resp.status_code == 404:
+            raise requests.HTTPError(
+                f"404 Not Found — check endpoint path is correct: {resp.url}",
+                response=resp,
+            )
+        try:
+            return resp.json()
+        except Exception:
+            raise requests.HTTPError(
+                f"Non-JSON response (status={resp.status_code}): {resp.text[:200]}",
+                response=resp,
+            )
+
     def _get(self, path: str, params: dict) -> dict:
         signed = self._signed(params)
         url = f"{self.base_url}/{path.lstrip('/')}"
+        logger.info("Nuomiy → GET %s  params=%s", url, [k for k in signed if k != 'sign'])
         resp = requests.get(url, params=signed, timeout=15)
+        data = self._parse(resp)
+        logger.info("Nuomiy ← GET %s  status=%s  code=%s", path, resp.status_code, data.get("code", "?"))
         resp.raise_for_status()
-        data = resp.json()
-        logger.debug("GET %s → code=%s", path, data.get("code", "?"))
         return data
 
     def _post(self, path: str, params: dict) -> dict:
         # Nuomiy POST endpoints use query-string params, not a JSON body
         signed = self._signed(params)
         url = f"{self.base_url}/{path.lstrip('/')}"
+        logger.info("Nuomiy → POST %s  params=%s", url, [k for k in signed if k != 'sign'])
         resp = requests.post(url, params=signed, timeout=15)
+        data = self._parse(resp)
+        logger.info("Nuomiy ← POST %s  status=%s  code=%s", path, resp.status_code, data.get("code", "?"))
         resp.raise_for_status()
-        data = resp.json()
-        logger.debug("POST %s → code=%s", path, data.get("code", "?"))
         return data
 
     @staticmethod
@@ -360,17 +377,17 @@ class NuomiyCloudService:
     def get_devices(
         self,
         page_index: int = 1,
-        page_size: int = 20,
+        page_size: int = 100,
         begin_time: str | None = None,
         end_time: str | None = None,
     ) -> dict:
-        """GET /device/getinfo — paginated device list. begin/end: yyyy-MM-dd HH:mm"""
+        """GET /device/devices — paginated device list. begin/end: yyyy-MM-dd HH:mm"""
         params: dict = {"pageIndex": str(page_index), "pageSize": str(page_size)}
         if begin_time:
             params["beginTime"] = begin_time
         if end_time:
             params["endTime"] = end_time
-        return self._get("device/getinfo", params)
+        return self._get("device/devices", params)
 
     # ── Basic settings ──────────────────────────────────────────────────────
 
