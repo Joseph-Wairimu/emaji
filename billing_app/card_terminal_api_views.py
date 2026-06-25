@@ -19,6 +19,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.db import transaction as db_transaction
+
 from .models import (
     CardBinding,
     CardTerminalDevice,
@@ -28,6 +30,7 @@ from .models import (
     Customer,
     PaymentLog,
     PrepaidWallet,
+    Site,
 )
 from .permissions import IsAdmin, IsStaff
 from .views_card_terminal import _upsert_whitelist
@@ -246,6 +249,76 @@ class CardBindingSerializer(drf_serializers.ModelSerializer):
         return binding
 
 
+def _auto_import_nuomiy_cardholder(c: dict) -> 'CardBinding | None':
+    """
+    Auto-create a local Customer + CardBinding + PrepaidWallet for a Nuomiy
+    cardholder that has no matching local record (e.g. registered via Nuomiy portal).
+    Idempotent: checks by nuomiy_card_id first to avoid duplicates on repeated calls.
+    """
+    card_no = str(c.get('cardNumber') or '')
+    nuomiy_card_id = str(c.get('cardId', ''))
+    nuomiy_customer_id = str(c.get('customerId', ''))
+    if not card_no:
+        return None
+
+    # Already imported under a different card_no? (e.g. after a reissue)
+    if nuomiy_card_id:
+        existing = CardBinding.objects.filter(nuomiy_card_id=nuomiy_card_id).first()
+        if existing:
+            if existing.card_no != card_no:
+                existing.card_no = card_no
+                existing.save(update_fields=['card_no'])
+            return existing
+
+    site = Site.objects.order_by('id').first()
+    if not site:
+        logger.warning('Auto-import skipped for card %s: no Site exists in E-Maji', card_no)
+        return None
+
+    customer_name = (c.get('customerName') or 'Unknown').strip()
+    parts = customer_name.split(' ', 1)
+    first_name = parts[0]
+    last_name = parts[1] if len(parts) > 1 else ''
+
+    try:
+        with db_transaction.atomic():
+            customer = Customer.objects.create(
+                first_name=first_name,
+                last_name=last_name,
+                phone=c.get('mobileNumber') or '',
+                email=f'nuomiy_{nuomiy_card_id or card_no}@nuomiy.local',
+                plot_no=c.get('customerIdentity') or card_no,
+                court_name=c.get('merchantName') or '',
+                usage_status='ACTIVE',
+                account_status='ACTIVE',
+                site=site,
+                created_by=None,
+            )
+            cash_balance = Decimal(str(c.get('cashBalance') or '0'))
+            PrepaidWallet.objects.create(
+                customer=customer,
+                balance_kes=cash_balance,
+                balance_m3=Decimal('0'),
+                last_known_flow_m3=Decimal('0'),
+                valve_status='unknown',
+            )
+            binding = CardBinding.objects.create(
+                card_no=card_no,
+                customer=customer,
+                is_active=(int(c.get('cardStatus', 1)) == 1),
+                nuomiy_card_id=nuomiy_card_id,
+                nuomiy_customer_id=nuomiy_customer_id,
+            )
+            # If card has balance, add to whitelist for offline access
+            if cash_balance > Decimal('0'):
+                _upsert_whitelist(card_no, 1)
+        logger.info('Auto-imported Nuomiy card %s → local customer %s', card_no, customer.id)
+        return binding
+    except Exception:
+        logger.exception('Failed to auto-import Nuomiy card %s', card_no)
+        return None
+
+
 class CardTerminalTariffSerializer(drf_serializers.ModelSerializer):
     class Meta:
         model = CardTerminalTariff
@@ -369,6 +442,10 @@ def _normalize_nuomiy_cardholder(c: dict, local_map: dict) -> dict:
     local = local_map.get(card_no)
     nuomiy_card_id = str(c.get('cardId', ''))
     nuomiy_customer_id = str(c.get('customerId', ''))
+
+    # Auto-import: create local Customer + CardBinding for Nuomiy-only cards
+    if not local:
+        local = _auto_import_nuomiy_cardholder(c)
 
     # Backfill cardId and customerId on the local binding so card operations use correct IDs
     if local:
