@@ -395,7 +395,7 @@ class NuomiyCloudService:
         if customer_address:
             params["customerAddress"] = customer_address
         params.update({k: str(v) for k, v in extra.items() if v is not None and str(v) != ""})
-        return self._post("customer/updateInfo", params)
+        return self._post("customer/update", params)
 
     # ── Device management ───────────────────────────────────────────────────
 

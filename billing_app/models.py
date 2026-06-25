@@ -283,7 +283,11 @@ class CardBinding(models.Model):
     is_active = models.BooleanField(default=True)
     nuomiy_customer_id = models.CharField(
         max_length=50, blank=True, null=True,
-        help_text='Customer ID assigned by the Nuomiy cloud platform on registration',
+        help_text='customerId assigned by Nuomiy on registration (used for modify/query)',
+    )
+    nuomiy_card_id = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text='cardId assigned by Nuomiy (used for unsubscribeCard, reissueCard, addrechage)',
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

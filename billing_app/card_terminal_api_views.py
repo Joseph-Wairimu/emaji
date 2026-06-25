@@ -110,15 +110,17 @@ def _nuomiy_recharge(
                 return
             transaction_type = str(tx_id)
 
-        # Resolve card identifier — prefer nuomiy_customer_id as cardId;
-        # fall back to the physical card number as cardNo (must be numeric).
+        # Resolve card identifier: addrechage uses cardId (Nuomiy's internal card ID).
+        # Prefer nuomiy_card_id; fall back to nuomiy_customer_id; last resort: physical cardNo.
         card_id = None
         card_no = None
-        if binding.nuomiy_customer_id:
-            try:
-                card_id = int(binding.nuomiy_customer_id)
-            except (ValueError, TypeError):
-                pass
+        for id_field in (binding.nuomiy_card_id, binding.nuomiy_customer_id):
+            if id_field:
+                try:
+                    card_id = int(id_field)
+                    break
+                except (ValueError, TypeError):
+                    pass
         if card_id is None:
             try:
                 card_no = int(binding.card_no)
@@ -143,22 +145,21 @@ def _nuomiy_recharge(
 
 def _nuomiy_set_card_status(binding: 'CardBinding', card_status: str) -> None:
     """
-    Mirror a card status change to Nuomiy.
+    Mirror a card status change to Nuomiy via unsubscribeCard.
     card_status: '1'=issued, '3'=lost, '4'=cancelled
-    Uses nuomiy_customer_id if stored; falls back to card_no lookup.
+    unsubscribeCard.cardIds expects the Nuomiy cardId (not customerId).
     """
     if not settings.NUOMIY_APP_ID:
         return
+    # Prefer nuomiy_card_id (the cardId field); fall back to nuomiy_customer_id
+    nuomiy_id = binding.nuomiy_card_id or binding.nuomiy_customer_id
+    if not nuomiy_id:
+        logger.warning('No Nuomiy card/customer ID for card %s — skipping status sync', binding.card_no)
+        return
     try:
         from .services.nuomiy_cloud import NuomiyCloudService
-        if not binding.nuomiy_customer_id:
-            logger.warning('No nuomiy_customer_id for card %s — skipping status sync', binding.card_no)
-            return
         svc = NuomiyCloudService()
-        resp = svc.unsubscribe_card(
-            card_ids=binding.nuomiy_customer_id,
-            card_status=card_status,
-        )
+        resp = svc.unsubscribe_card(card_ids=nuomiy_id, card_status=card_status)
         logger.info('Nuomiy set card %s status %s → %s', binding.card_no, card_status, resp.get('code'))
     except Exception:
         logger.exception('Nuomiy status sync failed for card %s', binding.card_no)
@@ -166,16 +167,22 @@ def _nuomiy_set_card_status(binding: 'CardBinding', card_status: str) -> None:
 
 def _nuomiy_reissue(binding: 'CardBinding', new_card_no: str) -> None:
     """Mirror a card reissue to Nuomiy (replace physical card number)."""
-    if not settings.NUOMIY_APP_ID or not binding.nuomiy_customer_id:
+    if not settings.NUOMIY_APP_ID:
+        return
+    # reissueCard requires cardId (not customerId)
+    nuomiy_card_id = binding.nuomiy_card_id or binding.nuomiy_customer_id
+    if not nuomiy_card_id:
+        logger.warning('Nuomiy reissue skipped: no card ID stored for card %s', binding.card_no)
         return
     try:
         from .services.nuomiy_cloud import NuomiyCloudService
         svc = NuomiyCloudService()
+        merchant_id = int(settings.NUOMIY_MERCHANT_ID) if settings.NUOMIY_MERCHANT_ID else 0
         resp = svc.reissue_card(
-            card_id=int(binding.nuomiy_customer_id),
+            card_id=int(nuomiy_card_id),
             card_number=new_card_no,
             card_amount=Decimal('0.00'),
-            merchant_id=0,
+            merchant_id=merchant_id,
         )
         logger.info('Nuomiy reissue card %s → %s  code=%s', binding.card_no, new_card_no, resp.get('code'))
     except Exception:
@@ -360,6 +367,21 @@ def _normalize_nuomiy_cardholder(c: dict, local_map: dict) -> dict:
     """
     card_no = str(c.get('cardNumber') or c.get('cardNo') or '')
     local = local_map.get(card_no)
+    nuomiy_card_id = str(c.get('cardId', ''))
+    nuomiy_customer_id = str(c.get('customerId', ''))
+
+    # Backfill cardId and customerId on the local binding so card operations use correct IDs
+    if local:
+        update_fields = []
+        if nuomiy_card_id and local.nuomiy_card_id != nuomiy_card_id:
+            local.nuomiy_card_id = nuomiy_card_id
+            update_fields.append('nuomiy_card_id')
+        if nuomiy_customer_id and local.nuomiy_customer_id != nuomiy_customer_id:
+            local.nuomiy_customer_id = nuomiy_customer_id
+            update_fields.append('nuomiy_customer_id')
+        if update_fields:
+            local.save(update_fields=update_fields)
+
     return {
         # local UUID — required by top-up and deactivate actions
         'id': str(local.id) if local else str(c.get('customerId', '')),
@@ -369,8 +391,8 @@ def _normalize_nuomiy_cardholder(c: dict, local_map: dict) -> dict:
         # local UUID for /card-terminal/topup/ call
         'customer_id': str(local.customer.id) if local else None,
         # Nuomiy IDs for sync operations
-        'nuomiy_customer_id': str(c.get('customerId', '')),
-        'nuomiy_card_id': str(c.get('cardId', '')),
+        'nuomiy_customer_id': nuomiy_customer_id,
+        'nuomiy_card_id': nuomiy_card_id,
         # card state: 1=Issued (active), 2=Not Issued, 3=Lost, 4=Cancelled
         'is_active': int(c.get('cardStatus', 0)) == 1,
         'card_status': c.get('cardStatus'),
