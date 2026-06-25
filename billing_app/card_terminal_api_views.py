@@ -96,6 +96,7 @@ def _nuomiy_recharge(
     amount_kes: Decimal,
     transaction_type: str | None = None,
     transaction_status: str = '1',
+    wallet_type: str | None = None,
 ) -> None:
     """Mirror a top-up to the Nuomiy platform wallet."""
     if not settings.NUOMIY_APP_ID:
@@ -104,14 +105,9 @@ def _nuomiy_recharge(
         from .services.nuomiy_cloud import NuomiyCloudService
         svc = NuomiyCloudService()
 
-        # If not supplied by the caller, fetch the first available transaction type
-        if not transaction_type:
-            tx_rows = _nuomiy_rows(svc.get_transaction_types())
-            tx_id = _nuomiy_first_id(tx_rows, 'transactionTypeId') or _nuomiy_first_id(tx_rows, 'id')
-            if not tx_id:
-                logger.warning('Nuomiy recharge skipped: no transaction types found on platform')
-                return
-            transaction_type = str(tx_id)
+        # Cash recharge = transactionCode 1, Cash wallet = walletType 1
+        resolved_wallet_type = wallet_type or '1'
+        transaction_type = transaction_type or '1'
 
         # Resolve card identifier: addrechage uses cardId (Nuomiy's internal card ID).
         # Prefer nuomiy_card_id; fall back to nuomiy_customer_id; last resort: physical cardNo.
@@ -137,7 +133,7 @@ def _nuomiy_recharge(
             amount=amount_kes,
             transaction_status=transaction_status,
             transaction_type=str(transaction_type),
-            wallet_type='1',
+            wallet_type=resolved_wallet_type,
             card_id=card_id,
             card_no=card_no,
         )
@@ -711,20 +707,16 @@ class CardTerminalBasesettingsView(APIView):
             tx_rows = _nuomiy_rows(tx_resp)
             if tx_rows:
                 logger.info('Nuomiy transaction_types first row keys: %s', list(tx_rows[0].keys()))
+            # id=transactionCode because addrechage expects transactionCode (1,2,3…) not transactionId
             transaction_types = [
                 {
-                    'id': str(
-                        r.get('id') or r.get('transactionTypeId') or
-                        r.get('typeId') or r.get('type') or ''
-                    ),
-                    'name': (
-                        r.get('transactionTypeName') or r.get('typeName') or
-                        r.get('name') or r.get('description') or ''
-                    ),
+                    'id': str(r['transactionCode']),
+                    'name': r.get('transactionModeName') or str(r['transactionCode']),
                     'direction': r.get('transactionStatus'),
+                    'wallet_type': str(r.get('transactionWalletType') or '1'),
                 }
                 for r in tx_rows
-                if r.get('id') or r.get('transactionTypeId') or r.get('typeId') or r.get('type')
+                if r.get('transactionCode')
             ]
         except Exception as e:
             logger.warning('Nuomiy get_transaction_types failed: %s', e)
@@ -751,6 +743,7 @@ class CardTerminalTopupView(APIView):
         amount_raw = request.data.get('amount_kes')
         transaction_type = str(request.data.get('transaction_type', '')).strip() or None
         transaction_status = str(request.data.get('transaction_status', '1')).strip()
+        wallet_type = str(request.data.get('wallet_type', '')).strip() or None
 
         if not customer_id or amount_raw is None:
             return Response(
@@ -795,7 +788,7 @@ class CardTerminalTopupView(APIView):
         )
 
         if binding:
-            _nuomiy_recharge(binding, amount_kes, transaction_type=transaction_type, transaction_status=transaction_status)
+            _nuomiy_recharge(binding, amount_kes, transaction_type=transaction_type, transaction_status=transaction_status, wallet_type=wallet_type)
 
         return Response({
             'status': 'ok',
