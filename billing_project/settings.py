@@ -117,6 +117,30 @@ USE_TZ = True
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name} — {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'billing_app': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
 # Smart meter / Fengbo Cloud integration
 FENGBO_API_URL = config('FENGBO_API_URL', default='')
 FENGBO_AREA_NAME = config('FENGBO_AREA_NAME', default='')
@@ -126,3 +150,13 @@ SMART_METER_API_KEY = config('SMART_METER_API_KEY', default='')
 
 # Card-swipe terminal integration
 CARD_TERMINAL_API_KEY = config('CARD_TERMINAL_API_KEY', default='')
+
+# Nuomiy / IDMP merchant API
+NUOMIY_BASE_URL = config('NUOMIY_BASE_URL', default='https://ivmer.nuomiy.com/meropen')
+NUOMIY_APP_ID = config('NUOMIY_APP_ID', default='')
+NUOMIY_PRIVATE_KEY = config('NUOMIY_PRIVATE_KEY', default='')
+# Platform-specific IDs — confirm with /basesetting/cardtypes, /depts, /transactions
+NUOMIY_DEFAULT_CARD_TYPE = config('NUOMIY_DEFAULT_CARD_TYPE', default='1')
+NUOMIY_DEFAULT_DEPT_ID = config('NUOMIY_DEFAULT_DEPT_ID', default='1')
+NUOMIY_DEFAULT_WALLET_TYPE = config('NUOMIY_DEFAULT_WALLET_TYPE', default='1')
+NUOMIY_DEFAULT_TRANSACTION_TYPE = config('NUOMIY_DEFAULT_TRANSACTION_TYPE', default='1')

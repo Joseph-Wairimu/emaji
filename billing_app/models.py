@@ -281,6 +281,10 @@ class CardBinding(models.Model):
     card_no = models.CharField(max_length=50, unique=True)
     customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name='card_binding')
     is_active = models.BooleanField(default=True)
+    nuomiy_customer_id = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text='Customer ID assigned by the Nuomiy cloud platform on registration',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

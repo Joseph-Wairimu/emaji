@@ -1,11 +1,18 @@
 """
 DRF API views for card terminal management (used by the frontend dashboard).
 All endpoints require JWT authentication.
+
+Nuomiy cloud sync: card binding creation, top-ups, and deactivations are
+mirrored to the Nuomiy platform as best-effort background calls. Failures
+are logged but never surface as errors to the caller — E-Maji's local DB
+is the source of truth.
 """
 import uuid
 import logging
+from datetime import date, timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers as drf_serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -26,6 +33,99 @@ from .permissions import IsAdmin, IsStaff
 from .views_card_terminal import _upsert_whitelist
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Nuomiy cloud sync helpers — best-effort, never raise
+# ---------------------------------------------------------------------------
+
+def _nuomiy_register(binding: 'CardBinding') -> None:
+    """Register the cardholder on the Nuomiy platform and store the returned ID."""
+    if not settings.NUOMIY_APP_ID:
+        return
+    try:
+        from .services.nuomiy_cloud import NuomiyCloudService
+        customer = binding.customer
+        indate = (date.today() + timedelta(days=5 * 365)).strftime('%Y-%m-%d')
+        svc = NuomiyCloudService()
+        resp = svc.register_cardholder(
+            customer_name=f'{customer.first_name} {customer.last_name}',
+            customer_sex=0,
+            card_type=int(settings.NUOMIY_DEFAULT_CARD_TYPE),
+            dept_id=int(settings.NUOMIY_DEFAULT_DEPT_ID),
+            indate_period=indate,
+            card_number=binding.card_no,
+            mobile_number=customer.phone or None,
+        )
+        nuomiy_id = str(resp.get('data') or resp.get('id') or '')
+        if nuomiy_id:
+            binding.nuomiy_customer_id = nuomiy_id
+            binding.save(update_fields=['nuomiy_customer_id'])
+        logger.info('Nuomiy register cardholder %s → %s', binding.card_no, resp.get('code'))
+    except Exception:
+        logger.exception('Nuomiy register failed for card %s', binding.card_no)
+
+
+def _nuomiy_recharge(binding: 'CardBinding', amount_kes: Decimal) -> None:
+    """Mirror a top-up to the Nuomiy platform wallet."""
+    if not settings.NUOMIY_APP_ID:
+        return
+    try:
+        from .services.nuomiy_cloud import NuomiyCloudService
+        svc = NuomiyCloudService()
+
+        # Resolve card identifier — prefer nuomiy_customer_id as cardId;
+        # fall back to the physical card number as cardNo (must be numeric).
+        card_id = None
+        card_no = None
+        if binding.nuomiy_customer_id:
+            try:
+                card_id = int(binding.nuomiy_customer_id)
+            except (ValueError, TypeError):
+                pass
+        if card_id is None:
+            try:
+                card_no = int(binding.card_no)
+            except (ValueError, TypeError):
+                logger.warning(
+                    'Nuomiy recharge skipped: card %s has no numeric identifier', binding.card_no
+                )
+                return
+
+        resp = svc.recharge(
+            amount=amount_kes,  # Decimal passed directly; service formats to 2dp
+            transaction_status='1',
+            transaction_type=settings.NUOMIY_DEFAULT_TRANSACTION_TYPE,
+            wallet_type=settings.NUOMIY_DEFAULT_WALLET_TYPE,
+            card_id=card_id,
+            card_no=card_no,
+        )
+        logger.info('Nuomiy recharge card %s +%s → %s', binding.card_no, amount_kes, resp.get('code'))
+    except Exception:
+        logger.exception('Nuomiy recharge failed for card %s', binding.card_no)
+
+
+def _nuomiy_set_card_status(binding: 'CardBinding', card_status: str) -> None:
+    """
+    Mirror a card status change to Nuomiy.
+    card_status: '1'=issued, '3'=lost, '4'=cancelled
+    Uses nuomiy_customer_id if stored; falls back to card_no lookup.
+    """
+    if not settings.NUOMIY_APP_ID:
+        return
+    try:
+        from .services.nuomiy_cloud import NuomiyCloudService
+        if not binding.nuomiy_customer_id:
+            logger.warning('No nuomiy_customer_id for card %s — skipping status sync', binding.card_no)
+            return
+        svc = NuomiyCloudService()
+        resp = svc.unsubscribe_card(
+            card_ids=binding.nuomiy_customer_id,
+            card_status=card_status,
+        )
+        logger.info('Nuomiy set card %s status %s → %s', binding.card_no, card_status, resp.get('code'))
+    except Exception:
+        logger.exception('Nuomiy status sync failed for card %s', binding.card_no)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +164,7 @@ class CardBindingSerializer(drf_serializers.ModelSerializer):
         wallet = PrepaidWallet.objects.filter(customer=customer).first()
         if wallet and wallet.balance_kes > Decimal('0'):
             _upsert_whitelist(binding.card_no, 1)
+        _nuomiy_register(binding)
         return binding
 
 
@@ -174,14 +275,17 @@ class CardBindingDetailView(APIView):
         if is_active is not None:
             binding.is_active = bool(is_active)
             binding.save(update_fields=['is_active'])
-            # Sync whitelist
             op = 1 if binding.is_active else 0
             _upsert_whitelist(binding.card_no, op)
+            # Mirror status to Nuomiy: re-issued (1) or lost (3)
+            _nuomiy_set_card_status(binding, '1' if binding.is_active else '3')
         return Response(CardBindingSerializer(binding).data)
 
     def delete(self, request, binding_id):
         binding = get_object_or_404(CardBinding, id=binding_id)
         _upsert_whitelist(binding.card_no, 0)
+        # Mark as cancelled on Nuomiy before removing locally
+        _nuomiy_set_card_status(binding, '4')
         binding.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -293,12 +397,15 @@ class CardTerminalTopupView(APIView):
         wallet.balance_kes += amount_kes
         wallet.save(update_fields=['balance_kes', 'updated_at'])
 
-        # Enable offline access
+        # Enable offline access and mirror recharge to Nuomiy
+        binding = None
+        card_no = None
         try:
-            card_no = customer.card_binding.card_no
+            binding = customer.card_binding
+            card_no = binding.card_no
             _upsert_whitelist(card_no, 1)
         except CardBinding.DoesNotExist:
-            card_no = None
+            pass
 
         ref = f'CT-TOPUP-{uuid.uuid4().hex[:10].upper()}'
         PaymentLog.objects.create(
@@ -309,6 +416,9 @@ class CardTerminalTopupView(APIView):
             transaction_reference=ref,
             created_by=request.user,
         )
+
+        if binding:
+            _nuomiy_recharge(binding, amount_kes)
 
         return Response({
             'status': 'ok',

@@ -11,3 +11,4 @@ django-filter>=23.5
 gunicorn>=21.2
 requests>=2.31
 python-dateutil>=2.8
+pycryptodome>=3.19
