@@ -372,6 +372,31 @@ class NuomiyCloudService:
         }
         return self._post("customer/reissueCard", params)
 
+    def modify_cardholder(
+        self,
+        customer_id: str,
+        customer_name: str | None = None,
+        mobile_number: str | None = None,
+        customer_sex: int | None = None,
+        customer_birthday: str | None = None,
+        customer_address: str | None = None,
+        **extra,
+    ) -> dict:
+        """POST /customer/updateInfo — update cardholder details on Nuomiy."""
+        params: dict = {"customerId": str(customer_id)}
+        if customer_name:
+            params["customerName"] = customer_name
+        if mobile_number:
+            params["mobileNumber"] = mobile_number
+        if customer_sex is not None:
+            params["customerSex"] = str(customer_sex)
+        if customer_birthday:
+            params["customerBirthday"] = customer_birthday
+        if customer_address:
+            params["customerAddress"] = customer_address
+        params.update({k: str(v) for k, v in extra.items() if v is not None and str(v) != ""})
+        return self._post("customer/updateInfo", params)
+
     # ── Device management ───────────────────────────────────────────────────
 
     def get_devices(
@@ -381,12 +406,19 @@ class NuomiyCloudService:
         begin_time: str | None = None,
         end_time: str | None = None,
     ) -> dict:
-        """GET /device/devices — paginated device list. begin/end: yyyy-MM-dd HH:mm"""
-        params: dict = {"pageIndex": str(page_index), "pageSize": str(page_size)}
-        if begin_time:
-            params["beginTime"] = begin_time
-        if end_time:
-            params["endTime"] = end_time
+        """
+        GET /device/devices — paginated device list.
+        beginTime / endTime are required by the API; format: yyyy-MM-dd HH:mm.
+        Defaults to a 2-year window ending now when not supplied.
+        """
+        _fmt = "%Y-%m-%d %H:%M"
+        now = datetime.now()
+        params: dict = {
+            "pageIndex": str(page_index),
+            "pageSize": str(page_size),
+            "beginTime": begin_time or (now.replace(year=now.year - 2)).strftime(_fmt),
+            "endTime": end_time or now.strftime(_fmt),
+        }
         return self._get("device/devices", params)
 
     # ── Basic settings ──────────────────────────────────────────────────────

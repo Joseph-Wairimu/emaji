@@ -39,20 +39,42 @@ logger = logging.getLogger(__name__)
 # Nuomiy cloud sync helpers — best-effort, never raise
 # ---------------------------------------------------------------------------
 
+def _nuomiy_first_id(rows: list, id_field: str) -> int | None:
+    """Extract the first available ID from a Nuomiy /basesetting list response."""
+    for row in rows:
+        val = row.get(id_field) or row.get('id')
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
 def _nuomiy_register(binding: 'CardBinding') -> None:
     """Register the cardholder on the Nuomiy platform and store the returned ID."""
     if not settings.NUOMIY_APP_ID:
         return
     try:
         from .services.nuomiy_cloud import NuomiyCloudService
+        svc = NuomiyCloudService()
+
+        # Fetch card type and dept from the platform so no env config is needed
+        card_type_rows = _nuomiy_rows(svc.get_card_types())
+        dept_rows = _nuomiy_rows(svc.get_depts())
+        card_type = _nuomiy_first_id(card_type_rows, 'cardTypeId')
+        dept_id = _nuomiy_first_id(dept_rows, 'deptId')
+        if not card_type or not dept_id:
+            logger.warning('Nuomiy register skipped: no card types or depts found on platform')
+            return
+
         customer = binding.customer
         indate = (date.today() + timedelta(days=5 * 365)).strftime('%Y-%m-%d')
-        svc = NuomiyCloudService()
         resp = svc.register_cardholder(
             customer_name=f'{customer.first_name} {customer.last_name}',
             customer_sex=0,
-            card_type=int(settings.NUOMIY_DEFAULT_CARD_TYPE),
-            dept_id=int(settings.NUOMIY_DEFAULT_DEPT_ID),
+            card_type=card_type,
+            dept_id=dept_id,
             indate_period=indate,
             card_number=binding.card_no,
             mobile_number=customer.phone or None,
@@ -66,13 +88,27 @@ def _nuomiy_register(binding: 'CardBinding') -> None:
         logger.exception('Nuomiy register failed for card %s', binding.card_no)
 
 
-def _nuomiy_recharge(binding: 'CardBinding', amount_kes: Decimal) -> None:
+def _nuomiy_recharge(
+    binding: 'CardBinding',
+    amount_kes: Decimal,
+    transaction_type: str | None = None,
+    transaction_status: str = '1',
+) -> None:
     """Mirror a top-up to the Nuomiy platform wallet."""
     if not settings.NUOMIY_APP_ID:
         return
     try:
         from .services.nuomiy_cloud import NuomiyCloudService
         svc = NuomiyCloudService()
+
+        # If not supplied by the caller, fetch the first available transaction type
+        if not transaction_type:
+            tx_rows = _nuomiy_rows(svc.get_transaction_types())
+            tx_id = _nuomiy_first_id(tx_rows, 'transactionTypeId') or _nuomiy_first_id(tx_rows, 'id')
+            if not tx_id:
+                logger.warning('Nuomiy recharge skipped: no transaction types found on platform')
+                return
+            transaction_type = str(tx_id)
 
         # Resolve card identifier — prefer nuomiy_customer_id as cardId;
         # fall back to the physical card number as cardNo (must be numeric).
@@ -93,10 +129,10 @@ def _nuomiy_recharge(binding: 'CardBinding', amount_kes: Decimal) -> None:
                 return
 
         resp = svc.recharge(
-            amount=amount_kes,  # Decimal passed directly; service formats to 2dp
-            transaction_status='1',
-            transaction_type=settings.NUOMIY_DEFAULT_TRANSACTION_TYPE,
-            wallet_type=settings.NUOMIY_DEFAULT_WALLET_TYPE,
+            amount=amount_kes,
+            transaction_status=transaction_status,
+            transaction_type=str(transaction_type),
+            wallet_type='1',
             card_id=card_id,
             card_no=card_no,
         )
@@ -126,6 +162,41 @@ def _nuomiy_set_card_status(binding: 'CardBinding', card_status: str) -> None:
         logger.info('Nuomiy set card %s status %s → %s', binding.card_no, card_status, resp.get('code'))
     except Exception:
         logger.exception('Nuomiy status sync failed for card %s', binding.card_no)
+
+
+def _nuomiy_reissue(binding: 'CardBinding', new_card_no: str) -> None:
+    """Mirror a card reissue to Nuomiy (replace physical card number)."""
+    if not settings.NUOMIY_APP_ID or not binding.nuomiy_customer_id:
+        return
+    try:
+        from .services.nuomiy_cloud import NuomiyCloudService
+        svc = NuomiyCloudService()
+        resp = svc.reissue_card(
+            card_id=int(binding.nuomiy_customer_id),
+            card_number=new_card_no,
+            card_amount=Decimal('0.00'),
+            merchant_id=0,
+        )
+        logger.info('Nuomiy reissue card %s → %s  code=%s', binding.card_no, new_card_no, resp.get('code'))
+    except Exception:
+        logger.exception('Nuomiy reissue failed for card %s', binding.card_no)
+
+
+def _nuomiy_modify(binding: 'CardBinding', name: str | None, mobile: str | None) -> None:
+    """Mirror cardholder detail changes to Nuomiy."""
+    if not settings.NUOMIY_APP_ID or not binding.nuomiy_customer_id:
+        return
+    try:
+        from .services.nuomiy_cloud import NuomiyCloudService
+        svc = NuomiyCloudService()
+        resp = svc.modify_cardholder(
+            customer_id=binding.nuomiy_customer_id,
+            customer_name=name,
+            mobile_number=mobile,
+        )
+        logger.info('Nuomiy modify card %s → %s', binding.card_no, resp.get('code'))
+    except Exception:
+        logger.exception('Nuomiy modify failed for card %s', binding.card_no)
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +325,6 @@ def _nuomiy_rows(resp: dict) -> list:
     return []
 
 
-def _first(*values):
-    """Return the first non-None, non-empty value from the candidates."""
-    for v in values:
-        if v is not None and v != '':
-            return v
-    return None
-
 
 def _normalize_nuomiy_device(d: dict, local_map: dict) -> dict:
     """
@@ -289,29 +353,35 @@ def _normalize_nuomiy_device(d: dict, local_map: dict) -> dict:
 
 def _normalize_nuomiy_cardholder(c: dict, local_map: dict) -> dict:
     """
-    Map a Nuomiy cardholder record to the shape CardBindingsTable expects.
-    local_map: { card_no -> CardBinding } for enriching customer_id and local id.
+    Map a Nuomiy /customer/getinfo record to the shape CardBindingsTable expects.
+    Confirmed response fields: cardNumber, virtualCardNo, customerName, customerId,
+    cardId, cardStatus, cashBalance, mobileNumber, indatePeriod, createTime.
+    local_map: { card_no -> CardBinding } for enriching local customer_id (UUID).
     """
-    card_no = str(_first(
-        c.get('cardNumber'), c.get('cardNo'), c.get('physicalCardNo'), ''
-    ))
+    card_no = str(c.get('cardNumber') or c.get('cardNo') or '')
     local = local_map.get(card_no)
-    card_status = str(_first(c.get('cardStatus'), c.get('status'), '1'))
     return {
-        'id': str(local.id) if local else str(_first(c.get('id'), c.get('customerId'), '')),
+        # local UUID — required by top-up and deactivate actions
+        'id': str(local.id) if local else str(c.get('customerId', '')),
         'card_no': card_no,
-        'customer_name': _first(
-            c.get('customerName'), c.get('name'),
-            f'{local.customer.first_name} {local.customer.last_name}' if local else None,
-            '—',
-        ),
+        'virtual_card_no': c.get('virtualCardNo') or '',
+        'customer_name': c.get('customerName') or '—',
+        # local UUID for /card-terminal/topup/ call
         'customer_id': str(local.customer.id) if local else None,
-        'is_active': card_status == '1',
-        'nuomiy_customer_id': str(_first(c.get('id'), c.get('customerId'), '')),
-        'created_at': _first(
-            c.get('createTime'), c.get('createDate'), c.get('createdAt'),
-            local.created_at.isoformat() if local else '',
-        ),
+        # Nuomiy IDs for sync operations
+        'nuomiy_customer_id': str(c.get('customerId', '')),
+        'nuomiy_card_id': str(c.get('cardId', '')),
+        # card state: 1=Issued (active), 2=Not Issued, 3=Lost, 4=Cancelled
+        'is_active': int(c.get('cardStatus', 0)) == 1,
+        'card_status': c.get('cardStatus'),
+        # wallet
+        'cash_balance': c.get('cashBalance'),
+        # cardholder info
+        'mobile_number': c.get('mobileNumber') or '',
+        'indate_period': c.get('indatePeriod') or '',
+        'merchant_name': c.get('merchantName') or '',
+        'created_at': c.get('createTime') or (local.created_at.isoformat() if local else ''),
+        'updated_at': c.get('updateTime') or '',
     }
 
 
@@ -380,27 +450,71 @@ class CardBindingListCreateView(APIView):
 
 class CardBindingDetailView(APIView):
     """
-    PATCH /api/card-terminal/bindings/<id>/ — update (e.g. deactivate a lost card)
-    DELETE /api/card-terminal/bindings/<id>/ — remove binding
+    PATCH /api/card-terminal/bindings/<id>/
+      action=activate   — unreport / re-activate card (Nuomiy status 1)
+      action=deactivate — report card as lost (Nuomiy status 3)
+      action=cancel     — cancel card, keep local record (Nuomiy status 4)
+      action=reissue    — replace physical card; requires card_no in body
+      action=modify     — edit cardholder name/mobile; optional fields in body
+    DELETE /api/card-terminal/bindings/<id>/ — remove binding + cancel on Nuomiy
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def patch(self, request, binding_id):
         binding = get_object_or_404(CardBinding, id=binding_id)
-        is_active = request.data.get('is_active')
-        if is_active is not None:
-            binding.is_active = bool(is_active)
+        action = request.data.get('action')
+
+        if action == 'activate':
+            binding.is_active = True
             binding.save(update_fields=['is_active'])
-            op = 1 if binding.is_active else 0
-            _upsert_whitelist(binding.card_no, op)
-            # Mirror status to Nuomiy: re-issued (1) or lost (3)
-            _nuomiy_set_card_status(binding, '1' if binding.is_active else '3')
+            _upsert_whitelist(binding.card_no, 1)
+            _nuomiy_set_card_status(binding, '1')
+
+        elif action == 'deactivate':
+            binding.is_active = False
+            binding.save(update_fields=['is_active'])
+            _upsert_whitelist(binding.card_no, 0)
+            _nuomiy_set_card_status(binding, '3')
+
+        elif action == 'cancel':
+            binding.is_active = False
+            binding.save(update_fields=['is_active'])
+            _upsert_whitelist(binding.card_no, 0)
+            _nuomiy_set_card_status(binding, '4')
+
+        elif action == 'reissue':
+            new_card_no = request.data.get('card_no', '').strip()
+            if not new_card_no:
+                return Response({'error': 'card_no is required for reissue'}, status=status.HTTP_400_BAD_REQUEST)
+            _nuomiy_reissue(binding, new_card_no)
+            old_card_no = binding.card_no
+            binding.card_no = new_card_no
+            binding.is_active = True
+            binding.save(update_fields=['card_no', 'is_active'])
+            _upsert_whitelist(old_card_no, 0)
+            _upsert_whitelist(new_card_no, 1)
+
+        elif action == 'modify':
+            name = request.data.get('customer_name', '').strip() or None
+            mobile = request.data.get('mobile_number', '').strip() or None
+            if name:
+                parts = name.split(' ', 1)
+                binding.customer.first_name = parts[0]
+                binding.customer.last_name = parts[1] if len(parts) > 1 else ''
+                binding.customer.save(update_fields=['first_name', 'last_name'])
+            if mobile:
+                binding.customer.phone = mobile
+                binding.customer.save(update_fields=['phone'])
+            _nuomiy_modify(binding, name, mobile)
+
+        else:
+            return Response({'error': f'Unknown action: {action}'}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(CardBindingSerializer(binding).data)
 
     def delete(self, request, binding_id):
         binding = get_object_or_404(CardBinding, id=binding_id)
         _upsert_whitelist(binding.card_no, 0)
-        # Mark as cancelled on Nuomiy before removing locally
         _nuomiy_set_card_status(binding, '4')
         binding.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -479,10 +593,56 @@ class CardTerminalWalletView(APIView):
         return Response(CardTerminalWalletSerializer(wallet).data)
 
 
+class CardTerminalBasesettingsView(APIView):
+    """
+    GET /api/card-terminal/basesettings/
+    Returns transaction types and wallet types from the Nuomiy platform,
+    so the frontend can populate dropdowns in the top-up sheet.
+    Falls back to empty lists if Nuomiy is unavailable.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not settings.NUOMIY_APP_ID:
+            return Response({'transaction_types': [], 'wallet_types': []})
+        try:
+            from .services.nuomiy_cloud import NuomiyCloudService
+            svc = NuomiyCloudService()
+            tx_resp = svc.get_transaction_types()
+            tx_rows = _nuomiy_rows(tx_resp)
+            if tx_rows:
+                logger.info('Nuomiy transaction_types first row keys: %s', list(tx_rows[0].keys()))
+            transaction_types = [
+                {
+                    'id': str(
+                        r.get('id') or r.get('transactionTypeId') or
+                        r.get('typeId') or r.get('type') or ''
+                    ),
+                    'name': (
+                        r.get('transactionTypeName') or r.get('typeName') or
+                        r.get('name') or r.get('description') or ''
+                    ),
+                    'direction': r.get('transactionStatus'),
+                }
+                for r in tx_rows
+                if r.get('id') or r.get('transactionTypeId') or r.get('typeId') or r.get('type')
+            ]
+        except Exception as e:
+            logger.warning('Nuomiy get_transaction_types failed: %s', e)
+            transaction_types = []
+
+        # Nuomiy does not expose a dedicated walletType endpoint;
+        # wallet type 1 = cash wallet (standard for all card terminals).
+        wallet_types = [{'id': '1', 'name': 'Cash Wallet'}]
+
+        return Response({'transaction_types': transaction_types, 'wallet_types': wallet_types})
+
+
 class CardTerminalTopupView(APIView):
     """
     POST /api/card-terminal/topup/
-    Body: { "customer_id": "<uuid>", "amount_kes": <number> }
+    Body: { "customer_id": "<uuid>", "amount_kes": <number>,
+            "transaction_type": "<id>", "transaction_status": "1"|"2" }
     Credits balance_kes, adds card to whitelist, records PaymentLog.
     """
     permission_classes = [IsAuthenticated]
@@ -490,6 +650,8 @@ class CardTerminalTopupView(APIView):
     def post(self, request):
         customer_id = request.data.get('customer_id')
         amount_raw = request.data.get('amount_kes')
+        transaction_type = str(request.data.get('transaction_type', '')).strip() or None
+        transaction_status = str(request.data.get('transaction_status', '1')).strip()
 
         if not customer_id or amount_raw is None:
             return Response(
@@ -534,7 +696,7 @@ class CardTerminalTopupView(APIView):
         )
 
         if binding:
-            _nuomiy_recharge(binding, amount_kes)
+            _nuomiy_recharge(binding, amount_kes, transaction_type=transaction_type, transaction_status=transaction_status)
 
         return Response({
             'status': 'ok',

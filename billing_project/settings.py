@@ -155,8 +155,3 @@ CARD_TERMINAL_API_KEY = config('CARD_TERMINAL_API_KEY', default='')
 NUOMIY_BASE_URL = config('NUOMIY_BASE_URL', default='https://ivmer.nuomiy.com/api/meropen')
 NUOMIY_APP_ID = config('NUOMIY_APP_ID', default='')
 NUOMIY_PRIVATE_KEY = config('NUOMIY_PRIVATE_KEY', default='')
-# Platform-specific IDs — confirm with /basesetting/cardtypes, /depts, /transactions
-NUOMIY_DEFAULT_CARD_TYPE = config('NUOMIY_DEFAULT_CARD_TYPE', default='1')
-NUOMIY_DEFAULT_DEPT_ID = config('NUOMIY_DEFAULT_DEPT_ID', default='1')
-NUOMIY_DEFAULT_WALLET_TYPE = config('NUOMIY_DEFAULT_WALLET_TYPE', default='1')
-NUOMIY_DEFAULT_TRANSACTION_TYPE = config('NUOMIY_DEFAULT_TRANSACTION_TYPE', default='1')

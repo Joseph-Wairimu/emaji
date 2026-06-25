@@ -24,6 +24,7 @@ from .card_terminal_api_views import (
     CardTerminalTariffDetailView,
     CardTerminalTransactionListView,
     CardTerminalWalletView,
+    CardTerminalBasesettingsView,
     CardTerminalTopupView,
     CardTerminalStatsView,
 )
@@ -74,6 +75,7 @@ urlpatterns = [
     path('card-terminal/tariffs/<uuid:tariff_id>/', CardTerminalTariffDetailView.as_view(), name='ct-tariff-detail'),
     path('card-terminal/transactions/', CardTerminalTransactionListView.as_view(), name='ct-transactions'),
     path('card-terminal/wallet/<uuid:customer_id>/', CardTerminalWalletView.as_view(), name='ct-wallet'),
+    path('card-terminal/basesettings/', CardTerminalBasesettingsView.as_view(), name='ct-basesettings'),
     path('card-terminal/topup/', CardTerminalTopupView.as_view(), name='ct-topup'),
     path('card-terminal/stats/', CardTerminalStatsView.as_view(), name='ct-stats'),
 
