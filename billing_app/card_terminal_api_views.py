@@ -164,7 +164,7 @@ def _nuomiy_set_card_status(binding: 'CardBinding', card_status: str) -> None:
         logger.exception('Nuomiy status sync failed for card %s', binding.card_no)
 
 
-def _nuomiy_reissue(binding: 'CardBinding', new_card_no: str) -> None:
+def _nuomiy_reissue(binding: 'CardBinding', new_card_no: str, card_amount: Decimal = Decimal('0.00')) -> None:
     """Mirror a card reissue to Nuomiy (replace physical card number)."""
     if not settings.NUOMIY_APP_ID:
         return
@@ -180,10 +180,10 @@ def _nuomiy_reissue(binding: 'CardBinding', new_card_no: str) -> None:
         resp = svc.reissue_card(
             card_id=int(nuomiy_card_id),
             card_number=new_card_no,
-            card_amount=Decimal('0.00'),
+            card_amount=card_amount,
             merchant_id=merchant_id,
         )
-        logger.info('Nuomiy reissue card %s → %s  code=%s', binding.card_no, new_card_no, resp.get('code'))
+        logger.info('Nuomiy reissue card %s → %s  fee=%s  code=%s', binding.card_no, new_card_no, card_amount, resp.get('code'))
     except Exception:
         logger.exception('Nuomiy reissue failed for card %s', binding.card_no)
 
@@ -581,7 +581,11 @@ class CardBindingDetailView(APIView):
             new_card_no = request.data.get('card_no', '').strip()
             if not new_card_no:
                 return Response({'error': 'card_no is required for reissue'}, status=status.HTTP_400_BAD_REQUEST)
-            _nuomiy_reissue(binding, new_card_no)
+            try:
+                card_amount = Decimal(str(request.data.get('card_amount', '0') or '0'))
+            except Exception:
+                card_amount = Decimal('0.00')
+            _nuomiy_reissue(binding, new_card_no, card_amount=card_amount)
             old_card_no = binding.card_no
             binding.card_no = new_card_no
             binding.is_active = True
