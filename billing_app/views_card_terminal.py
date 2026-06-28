@@ -32,7 +32,6 @@ from .models import (
     CardTerminalTransaction,
     CardTerminalWhitelistEntry,
     Customer,
-    PaymentLog,
     PrepaidWallet,
 )
 
@@ -91,8 +90,16 @@ def _upsert_device(request) -> CardTerminalDevice | None:
     return device
 
 
-def _get_active_tariff() -> CardTerminalTariff | None:
-    return CardTerminalTariff.objects.filter(is_active=True).first()
+class _FallbackTariff:
+    """Used when no CardTerminalTariff row exists — values come from settings."""
+    charge_mode = int(getattr(settings, 'CT_TARIFF_CHARGE_MODE', 0))
+    pulses_per_m3 = int(getattr(settings, 'CT_TARIFF_PULSES_PER_M3', 1000))
+    rate_per_m3 = Decimal(str(getattr(settings, 'CT_TARIFF_RATE_PER_M3', '50.00')))
+    offline_limit_kes = Decimal(str(getattr(settings, 'CT_TARIFF_OFFLINE_LIMIT_KES', '10.00')))
+
+
+def _get_active_tariff():
+    return CardTerminalTariff.objects.filter(is_active=True).first() or _FallbackTariff()
 
 
 def _upsert_whitelist(card_no: str, operation: int) -> None:
@@ -203,8 +210,6 @@ def consum_transactions(request):
         return _protocol_response({'Status': 0, 'Msg': 'Missing'})
 
     tariff = _get_active_tariff()
-    if not tariff:
-        return _protocol_response({'Status': 0, 'Msg': 'No Tariff'})
 
     try:
         binding = CardBinding.objects.select_related('customer').get(card_no=card_no, is_active=True)
@@ -305,14 +310,6 @@ def consum_transactions(request):
                 is_successful=True,
             )
 
-            PaymentLog.objects.create(
-                customer=customer,
-                billing_type='PREPAID',
-                amount_paid=amount_kes,
-                payment_method='Card Terminal',
-                transaction_reference=f'CT-{order_no[:40]}',
-            )
-
             # Remove from offline whitelist if balance exhausted
             if wallet.balance_kes <= Decimal('0'):
                 _upsert_whitelist(card_no, 0)
@@ -399,14 +396,6 @@ def offline_transactions(request):
             volume_consumed_units=cons_water_volf,
             balance_after_kes=wallet.balance_kes,
             is_successful=True,
-        )
-
-        PaymentLog.objects.create(
-            customer=customer,
-            billing_type='PREPAID',
-            amount_paid=money,
-            payment_method='Card Terminal (Offline)',
-            transaction_reference=f'CT-OFF-{order_no[:36]}',
         )
 
         if wallet.balance_kes <= Decimal('0'):
