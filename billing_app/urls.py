@@ -27,6 +27,11 @@ from .card_terminal_api_views import (
     CardTerminalBasesettingsView,
     CardTerminalTopupView,
     CardTerminalStatsView,
+    CardTerminalMpesaInitiateView,
+    MpesaCallbackView,
+    CardTerminalMpesaStatusView,
+    MpesaC2BConfirmationView,
+    MpesaC2BValidationView,
 )
 from .customer_portal_views import (
     CustomerMeView,
@@ -78,6 +83,15 @@ urlpatterns = [
     path('card-terminal/basesettings/', CardTerminalBasesettingsView.as_view(), name='ct-basesettings'),
     path('card-terminal/topup/', CardTerminalTopupView.as_view(), name='ct-topup'),
     path('card-terminal/stats/', CardTerminalStatsView.as_view(), name='ct-stats'),
+
+    # M-Pesa STK push for card terminal top-ups
+    path('card-terminal/mpesa/initiate/', CardTerminalMpesaInitiateView.as_view(), name='ct-mpesa-initiate'),
+    path('card-terminal/mpesa/callback/', MpesaCallbackView.as_view(), name='ct-mpesa-callback'),
+    path('card-terminal/mpesa/status/<str:checkout_request_id>/', CardTerminalMpesaStatusView.as_view(), name='ct-mpesa-status'),
+
+    # M-Pesa C2B (Paybill) — customer-initiated, no STK
+    path('card-terminal/mpesa/c2b/confirm/', MpesaC2BConfirmationView.as_view(), name='ct-mpesa-c2b-confirm'),
+    path('card-terminal/mpesa/c2b/validate/', MpesaC2BValidationView.as_view(), name='ct-mpesa-c2b-validate'),
 
     # Customer portal (role=CUSTOMER JWT)
     path('customer/me/', CustomerMeView.as_view(), name='customer-me'),

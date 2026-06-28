@@ -156,3 +156,10 @@ NUOMIY_BASE_URL = config('NUOMIY_BASE_URL', default='https://ivmer.nuomiy.com/ap
 NUOMIY_APP_ID = config('NUOMIY_APP_ID', default='')
 NUOMIY_PRIVATE_KEY = config('NUOMIY_PRIVATE_KEY', default='')
 NUOMIY_MERCHANT_ID = config('NUOMIY_MERCHANT_ID', default='')
+
+MPESA_CONSUMER_KEY = config('MPESA_CONSUMER_KEY', default='')
+MPESA_CONSUMER_SECRET = config('MPESA_CONSUMER_SECRET', default='')
+MPESA_SHORTCODE = config('MPESA_SHORTCODE', default='')
+MPESA_PASSKEY = config('MPESA_PASSKEY', default='')
+MPESA_CALLBACK_URL = config('MPESA_CALLBACK_URL', default='')
+MPESA_BASE_URL = config('MPESA_BASE_URL', default='https://sandbox.safaricom.co.ke')

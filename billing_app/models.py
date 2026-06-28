@@ -341,3 +341,31 @@ class CardTerminalWhitelistEntry(models.Model):
 
     def __str__(self):
         return f"{self.card_no} ({'allow' if self.operation == 1 else 'deny'})"
+
+
+class MpesaTopupRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('success', 'Success'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_topups')
+    amount_kes = models.DecimalField(max_digits=12, decimal_places=2)
+    phone_number = models.CharField(max_length=20)
+    checkout_request_id = models.CharField(max_length=100, unique=True, db_index=True)
+    merchant_request_id = models.CharField(max_length=100, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    result_code = models.CharField(max_length=10, blank=True)
+    result_desc = models.TextField(blank=True)
+    mpesa_receipt_number = models.CharField(max_length=50, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'MpesaTopup {self.checkout_request_id[:20]} — {self.status}'

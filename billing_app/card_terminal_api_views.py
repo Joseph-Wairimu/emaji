@@ -28,6 +28,7 @@ from .models import (
     CardTerminalTransaction,
     CardTerminalWhitelistEntry,
     Customer,
+    MpesaTopupRequest,
     PaymentLog,
     PrepaidWallet,
     Site,
@@ -513,10 +514,12 @@ class CardTerminalDeviceListView(APIView):
 
 class CardBindingListCreateView(APIView):
     """
-    GET  /api/card-terminal/bindings/ — list card→customer bindings from Nuomiy
-    POST /api/card-terminal/bindings/ — create a new binding (local + Nuomiy sync)
+    GET /api/card-terminal/bindings/
+    Lists card→customer bindings pulled from Nuomiy cloud.
+    Card bindings are created and managed on the Nuomiy platform only;
+    this endpoint is read-only from E-Maji's perspective.
     """
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         local_qs = CardBinding.objects.select_related('customer').order_by('-created_at')
@@ -534,13 +537,6 @@ class CardBindingListCreateView(APIView):
                 logger.warning('Nuomiy get_cardholders unavailable (%s) — falling back to local DB', e)
 
         return Response(CardBindingSerializer(local_qs, many=True).data)
-
-    def post(self, request):
-        serializer = CardBindingSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CardBindingDetailView(APIView):
@@ -809,7 +805,7 @@ class CardTerminalStatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Sum, Count
+        from django.db.models import Sum
         from django.utils import timezone
         from datetime import timedelta
 
@@ -817,29 +813,415 @@ class CardTerminalStatsView(APIView):
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        total_devices = CardTerminalDevice.objects.filter(is_active=True).count()
-        online_devices = CardTerminalDevice.objects.filter(
-            is_active=True,
-            last_seen_at__gte=now - timedelta(minutes=2),
-        ).count()
+        # Device counts — prefer Nuomiy as source of truth
+        total_devices = 0
+        online_devices = 0
+        if settings.NUOMIY_APP_ID:
+            try:
+                from .services.nuomiy_cloud import NuomiyCloudService
+                resp = NuomiyCloudService().get_devices(page_size=200)
+                rows = _nuomiy_rows(resp)
+                if rows:
+                    total_devices = len(rows)
+                    online_devices = sum(1 for d in rows if int(d.get('onlineStatus', 0)) == 1)
+            except Exception as e:
+                logger.warning('Stats: Nuomiy device count failed (%s) — using local DB', e)
 
+        if total_devices == 0:
+            total_devices = CardTerminalDevice.objects.filter(is_active=True).count()
+            online_devices = CardTerminalDevice.objects.filter(
+                is_active=True,
+                last_seen_at__gte=now - timedelta(minutes=2),
+            ).count()
+
+        # Water revenue — purely from CardTerminalTransaction (mode=0 deductions)
         txn_qs = CardTerminalTransaction.objects.filter(is_successful=True, mode=0)
-        today_collected = txn_qs.filter(
+        today_water_kes = txn_qs.filter(
             created_at__gte=today_start
         ).aggregate(total=Sum('amount_deducted_kes'))['total'] or Decimal('0')
 
-        month_collected = txn_qs.filter(
+        month_water_kes = txn_qs.filter(
             created_at__gte=month_start
         ).aggregate(total=Sum('amount_deducted_kes'))['total'] or Decimal('0')
 
-        offline_pending = CardTerminalTransaction.objects.filter(source='offline').count()
+        # Top-up revenue — from confirmed M-Pesa requests + manual PaymentLogs
+        today_topup_mpesa = MpesaTopupRequest.objects.filter(
+            status='success', created_at__gte=today_start
+        ).aggregate(total=Sum('amount_kes'))['total'] or Decimal('0')
+
+        month_topup_mpesa = MpesaTopupRequest.objects.filter(
+            status='success', created_at__gte=month_start
+        ).aggregate(total=Sum('amount_kes'))['total'] or Decimal('0')
+
+        today_topup_manual = PaymentLog.objects.filter(
+            payment_method='Card Terminal Top-Up',
+            created_at__gte=today_start,
+        ).aggregate(total=Sum('amount_paid'))['total'] or Decimal('0')
+
+        month_topup_manual = PaymentLog.objects.filter(
+            payment_method='Card Terminal Top-Up',
+            created_at__gte=month_start,
+        ).aggregate(total=Sum('amount_paid'))['total'] or Decimal('0')
+
         total_bindings = CardBinding.objects.filter(is_active=True).count()
+        offline_txn_count = CardTerminalTransaction.objects.filter(source='offline').count()
 
         return Response({
             'total_devices': total_devices,
             'online_devices': online_devices,
-            'today_collected_kes': str(round(today_collected, 2)),
-            'month_collected_kes': str(round(month_collected, 2)),
-            'offline_transactions': offline_pending,
+            'today_water_kes': str(round(today_water_kes, 2)),
+            'month_water_kes': str(round(month_water_kes, 2)),
+            'today_topup_kes': str(round(today_topup_mpesa + today_topup_manual, 2)),
+            'month_topup_kes': str(round(month_topup_mpesa + month_topup_manual, 2)),
             'active_card_bindings': total_bindings,
+            'offline_transactions': offline_txn_count,
+            # Legacy aliases so existing frontend doesn't break before it's updated
+            'today_collected_kes': str(round(today_water_kes, 2)),
+            'month_collected_kes': str(round(month_water_kes, 2)),
         })
+
+
+# ---------------------------------------------------------------------------
+# M-Pesa STK Push views
+# ---------------------------------------------------------------------------
+
+class CardTerminalMpesaInitiateView(APIView):
+    """
+    POST /api/card-terminal/mpesa/initiate/
+    Body: { "customer_id": "<uuid>", "amount_kes": <number>, "phone_number": "07XXXXXXXX" }
+    Initiates an M-Pesa STK push and returns a checkout_request_id for polling.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        customer_id = request.data.get('customer_id')
+        amount_raw = request.data.get('amount_kes')
+        phone = str(request.data.get('phone_number', '')).strip()
+
+        if not customer_id or amount_raw is None or not phone:
+            return Response(
+                {'error': 'customer_id, amount_kes, and phone_number are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            amount_kes = Decimal(str(amount_raw))
+            if amount_kes <= 0:
+                raise ValueError
+        except (ValueError, Exception):
+            return Response({'error': 'amount_kes must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Normalise phone → 254XXXXXXXXX
+        phone = phone.replace('+', '').replace(' ', '').replace('-', '')
+        if phone.startswith('0'):
+            phone = '254' + phone[1:]
+        if not phone.startswith('254') or len(phone) != 12 or not phone.isdigit():
+            return Response(
+                {'error': 'Invalid phone number. Use 07XXXXXXXX or 254XXXXXXXXX format.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        customer = get_object_or_404(Customer, id=customer_id)
+
+        try:
+            from .services.mpesa import MpesaService
+            svc = MpesaService()
+            resp = svc.initiate_stk_push(
+                phone=phone,
+                amount=amount_kes,
+                account_ref=f'EMAJI-{str(customer_id)[:7].upper()}',
+                description='Water Top-Up',
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as e:
+            logger.exception('M-Pesa STK initiation failed for customer %s', customer_id)
+            return Response({'error': f'M-Pesa service error: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if str(resp.get('ResponseCode', '')) != '0':
+            return Response(
+                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        checkout_request_id = resp.get('CheckoutRequestID', '')
+        merchant_request_id = resp.get('MerchantRequestID', '')
+
+        MpesaTopupRequest.objects.create(
+            customer=customer,
+            amount_kes=amount_kes,
+            phone_number=phone,
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            created_by=request.user,
+        )
+
+        return Response({
+            'status': 'pending',
+            'checkout_request_id': checkout_request_id,
+            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+        })
+
+
+class MpesaCallbackView(APIView):
+    """
+    POST /api/card-terminal/mpesa/callback/
+    Safaricom Daraja callback — no JWT, no CSRF. Credits wallet on ResultCode=0.
+    """
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        try:
+            body = request.data.get('Body', {})
+            cb = body.get('stkCallback', {})
+            checkout_request_id = cb.get('CheckoutRequestID', '')
+            result_code = str(cb.get('ResultCode', ''))
+            result_desc = cb.get('ResultDesc', '')
+
+            topup = MpesaTopupRequest.objects.filter(checkout_request_id=checkout_request_id).first()
+            if not topup:
+                logger.warning('M-Pesa callback: unknown CheckoutRequestID %s', checkout_request_id)
+                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+            if topup.status != 'pending':
+                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+            topup.result_code = result_code
+            topup.result_desc = result_desc
+
+            if result_code == '0':
+                items = cb.get('CallbackMetadata', {}).get('Item', [])
+                receipt = next((i.get('Value', '') for i in items if i.get('Name') == 'MpesaReceiptNumber'), '')
+                topup.mpesa_receipt_number = str(receipt)
+                topup.status = 'success'
+                topup.save()
+
+                if topup.customer:
+                    with db_transaction.atomic():
+                        wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
+                            customer=topup.customer,
+                            defaults={
+                                'balance_m3': Decimal('0'),
+                                'last_known_flow_m3': Decimal('0'),
+                                'valve_status': 'unknown',
+                            },
+                        )
+                        wallet.balance_kes += topup.amount_kes
+                        wallet.save(update_fields=['balance_kes', 'updated_at'])
+
+                        try:
+                            binding = topup.customer.card_binding
+                            _upsert_whitelist(binding.card_no, 1)
+                        except CardBinding.DoesNotExist:
+                            pass
+
+                        ref = f'MPESA-{topup.mpesa_receipt_number or topup.checkout_request_id[:16]}'
+                        PaymentLog.objects.create(
+                            customer=topup.customer,
+                            billing_type='PREPAID',
+                            amount_paid=topup.amount_kes,
+                            payment_method='M-Pesa',
+                            transaction_reference=ref,
+                            created_by=None,
+                        )
+                logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
+                            checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
+            else:
+                topup.status = 'failed' if result_code != '1032' else 'cancelled'
+                topup.save()
+                logger.info('M-Pesa topup %s: code=%s desc=%s', checkout_request_id, result_code, result_desc)
+
+        except Exception:
+            logger.exception('M-Pesa callback processing error')
+
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+
+class CardTerminalMpesaStatusView(APIView):
+    """
+    GET /api/card-terminal/mpesa/status/<checkout_request_id>/
+    Polls status of a pending STK push. Optionally queries Daraja if still pending.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, checkout_request_id):
+        topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
+
+        if topup.status == 'pending':
+            try:
+                from .services.mpesa import MpesaService
+                resp = MpesaService().query_stk_push(checkout_request_id)
+                result_code = str(resp.get('ResultCode', ''))
+                if result_code in ('1032', '1037'):
+                    # User cancelled or timeout
+                    topup.status = 'cancelled'
+                    topup.result_code = result_code
+                    topup.result_desc = resp.get('ResultDesc', 'Cancelled by user')
+                    topup.save()
+            except Exception:
+                pass  # Callback is authoritative; query is best-effort
+
+        return Response({
+            'status': topup.status,
+            'amount_kes': str(topup.amount_kes),
+            'phone_number': topup.phone_number,
+            'mpesa_receipt_number': topup.mpesa_receipt_number,
+            'result_desc': topup.result_desc,
+            'created_at': topup.created_at.isoformat(),
+        })
+
+
+# ---------------------------------------------------------------------------
+# M-Pesa C2B (Paybill) callbacks
+# ---------------------------------------------------------------------------
+
+def _resolve_customer_from_c2b(bill_ref: str, msisdn: str):
+    """
+    Try to match a C2B payment to a local customer.
+    Lookup order:
+      1. bill_ref as card_no on a CardBinding
+      2. bill_ref treated as a phone number (07XX… or 254XX…)
+      3. msisdn (paying phone) matched against customer phone
+    Returns (customer, binding_or_None).
+    """
+    # 1. Card number lookup
+    binding = (
+        CardBinding.objects
+        .filter(card_no=bill_ref, is_active=True)
+        .select_related('customer')
+        .first()
+    )
+    if binding:
+        return binding.customer, binding
+
+    def _normalise(phone: str) -> list[str]:
+        """Return all sensible variants of a phone string."""
+        p = phone.strip().replace('+', '').replace(' ', '').replace('-', '')
+        variants = {p}
+        if p.startswith('254') and len(p) == 12:
+            variants.add('0' + p[3:])
+        elif p.startswith('0') and len(p) == 10:
+            variants.add('254' + p[1:])
+        return list(variants)
+
+    # 2. Bill ref as phone
+    if bill_ref:
+        for variant in _normalise(bill_ref):
+            cust = Customer.objects.filter(phone=variant).first()
+            if cust:
+                try:
+                    return cust, cust.card_binding
+                except CardBinding.DoesNotExist:
+                    return cust, None
+
+    # 3. Paying phone
+    if msisdn:
+        for variant in _normalise(msisdn):
+            cust = Customer.objects.filter(phone=variant).first()
+            if cust:
+                try:
+                    return cust, cust.card_binding
+                except CardBinding.DoesNotExist:
+                    return cust, None
+
+    return None, None
+
+
+class MpesaC2BConfirmationView(APIView):
+    """
+    POST /api/card-terminal/mpesa/c2b/confirm/
+    Safaricom C2B (Paybill) confirmation callback — no auth.
+    Customers pay by dialling *150*00# → Pay Bill → shortcode + BillRefNumber.
+    BillRefNumber should be their NFC card number or registered phone number.
+    M-Pesa always expects { "ResultCode": 0, "ResultDesc": "Accepted" }.
+    """
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        try:
+            trans_id = str(request.data.get('TransID', '')).strip()
+            trans_amount = request.data.get('TransAmount', '0')
+            msisdn = str(request.data.get('MSISDN', '')).strip()
+            bill_ref = str(request.data.get('BillRefNumber', '')).strip()
+            first_name = str(request.data.get('FirstName', '')).strip()
+            last_name = str(request.data.get('LastName', '')).strip()
+
+            if not trans_id:
+                logger.warning('C2B confirmation: missing TransID in payload %s', request.data)
+                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+            # Idempotency — M-Pesa may retry
+            if MpesaTopupRequest.objects.filter(checkout_request_id=trans_id).exists():
+                logger.info('C2B duplicate ignored: TransID=%s', trans_id)
+                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+            try:
+                amount_kes = Decimal(str(trans_amount))
+            except Exception:
+                amount_kes = Decimal('0')
+
+            customer, binding = _resolve_customer_from_c2b(bill_ref, msisdn)
+
+            # Record the transaction regardless of whether customer was found
+            MpesaTopupRequest.objects.create(
+                customer=customer,
+                amount_kes=amount_kes,
+                phone_number=msisdn,
+                checkout_request_id=trans_id,
+                merchant_request_id='',  # no merchant request ID for C2B
+                mpesa_receipt_number=trans_id,
+                status='success' if customer else 'pending',
+                result_code='0',
+                result_desc=f'C2B Paybill — {first_name} {last_name} ref={bill_ref}'.strip(' —'),
+                created_by=None,
+            )
+
+            if customer and amount_kes > 0:
+                with db_transaction.atomic():
+                    wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
+                        customer=customer,
+                        defaults={
+                            'balance_m3': Decimal('0'),
+                            'last_known_flow_m3': Decimal('0'),
+                            'valve_status': 'unknown',
+                        },
+                    )
+                    wallet.balance_kes += amount_kes
+                    wallet.save(update_fields=['balance_kes', 'updated_at'])
+
+                    if binding:
+                        _upsert_whitelist(binding.card_no, 1)
+
+                    PaymentLog.objects.create(
+                        customer=customer,
+                        billing_type='PREPAID',
+                        amount_paid=amount_kes,
+                        payment_method='M-Pesa Paybill',
+                        transaction_reference=f'MPESA-{trans_id}',
+                        created_by=None,
+                    )
+                logger.info('C2B topup OK: TransID=%s KES=%s customer=%s bill_ref=%s',
+                            trans_id, amount_kes, customer.id, bill_ref)
+            else:
+                logger.warning('C2B topup UNMATCHED: TransID=%s KES=%s BillRef=%s MSISDN=%s — needs manual reconciliation',
+                               trans_id, amount_kes, bill_ref, msisdn)
+
+        except Exception:
+            logger.exception('C2B confirmation error for payload: %s', request.data)
+
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+
+class MpesaC2BValidationView(APIView):
+    """
+    POST /api/card-terminal/mpesa/c2b/validate/
+    Optional validation callback — register this URL in Daraja only if you want
+    to reject specific payments before they are processed. Always accept for now.
+    """
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, _request):
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
