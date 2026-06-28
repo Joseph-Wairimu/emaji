@@ -343,6 +343,31 @@ class CardTerminalWhitelistEntry(models.Model):
         return f"{self.card_no} ({'allow' if self.operation == 1 else 'deny'})"
 
 
+class CardTerminalTopup(models.Model):
+    SOURCE_CHOICES = [
+        ('manual', 'Manual / Cash'),
+        ('mpesa_stk', 'M-Pesa STK Push'),
+        ('mpesa_c2b', 'M-Pesa Paybill'),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='card_terminal_topups')
+    card_no = models.CharField(max_length=50, blank=True, db_index=True)
+    amount_kes = models.DecimalField(max_digits=12, decimal_places=2)
+    balance_after_kes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    mpesa_receipt = models.CharField(max_length=50, blank=True)
+    phone_number = models.CharField(max_length=20, blank=True)
+    reference = models.CharField(max_length=100, unique=True)
+    created_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Topup {self.reference} — KES {self.amount_kes}'
+
+
 class MpesaTopupRequest(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),

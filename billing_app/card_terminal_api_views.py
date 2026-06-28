@@ -25,11 +25,11 @@ from .models import (
     CardBinding,
     CardTerminalDevice,
     CardTerminalTariff,
+    CardTerminalTopup,
     CardTerminalTransaction,
     CardTerminalWhitelistEntry,
     Customer,
     MpesaTopupRequest,
-    PaymentLog,
     PrepaidWallet,
     Site,
 )
@@ -346,6 +346,27 @@ class CardTerminalTransactionSerializer(drf_serializers.ModelSerializer):
             'mode', 'mode_display', 'source', 'amount_deducted_kes',
             'volume_consumed_units', 'balance_after_kes',
             'is_successful', 'failure_reason', 'created_at',
+        ]
+
+
+class CardTerminalTopupSerializer(drf_serializers.ModelSerializer):
+    customer_name = drf_serializers.SerializerMethodField()
+    source_display = drf_serializers.SerializerMethodField()
+
+    def get_customer_name(self, obj):
+        if obj.customer:
+            return f'{obj.customer.first_name} {obj.customer.last_name}'
+        return None
+
+    def get_source_display(self, obj):
+        return dict(CardTerminalTopup.SOURCE_CHOICES).get(obj.source, obj.source)
+
+    class Meta:
+        model = CardTerminalTopup
+        fields = [
+            'id', 'customer_name', 'card_no', 'amount_kes', 'balance_after_kes',
+            'source', 'source_display', 'mpesa_receipt', 'phone_number',
+            'reference', 'created_at',
         ]
 
 
@@ -676,6 +697,33 @@ class CardTerminalTransactionListView(APIView):
         return Response(CardTerminalTransactionSerializer(qs[:limit], many=True).data)
 
 
+class CardTerminalTopupListView(APIView):
+    """
+    GET /api/card-terminal/topups/
+    Lists card terminal top-ups from the dedicated CardTerminalTopup table.
+    Supports ?card_no=, ?source=manual|mpesa_stk|mpesa_c2b, ?limit=
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = CardTerminalTopup.objects.select_related('customer').order_by('-created_at')
+
+        card_no = request.query_params.get('card_no')
+        if card_no:
+            qs = qs.filter(card_no=card_no)
+
+        source = request.query_params.get('source')
+        if source in ('manual', 'mpesa_stk', 'mpesa_c2b'):
+            qs = qs.filter(source=source)
+
+        try:
+            limit = min(int(request.query_params.get('limit', 200)), 500)
+        except (ValueError, TypeError):
+            limit = 200
+
+        return Response(CardTerminalTopupSerializer(qs[:limit], many=True).data)
+
+
 class CardTerminalWalletView(APIView):
     """GET /api/card-terminal/wallet/<customer_id>/ — card terminal balance for a customer."""
     permission_classes = [IsAuthenticated]
@@ -778,12 +826,13 @@ class CardTerminalTopupView(APIView):
             pass
 
         ref = f'CT-TOPUP-{uuid.uuid4().hex[:10].upper()}'
-        PaymentLog.objects.create(
+        CardTerminalTopup.objects.create(
             customer=customer,
-            billing_type='PREPAID',
-            amount_paid=amount_kes,
-            payment_method='Card Terminal Top-Up',
-            transaction_reference=ref,
+            card_no=card_no or '',
+            amount_kes=amount_kes,
+            balance_after_kes=wallet.balance_kes,
+            source='manual',
+            reference=ref,
             created_by=request.user,
         )
 
@@ -844,24 +893,14 @@ class CardTerminalStatsView(APIView):
             created_at__gte=month_start
         ).aggregate(total=Sum('amount_deducted_kes'))['total'] or Decimal('0')
 
-        # Top-up revenue — from confirmed M-Pesa requests + manual PaymentLogs
-        today_topup_mpesa = MpesaTopupRequest.objects.filter(
-            status='success', created_at__gte=today_start
+        # Top-up revenue — all sources unified in CardTerminalTopup table
+        today_topup_kes = CardTerminalTopup.objects.filter(
+            created_at__gte=today_start
         ).aggregate(total=Sum('amount_kes'))['total'] or Decimal('0')
 
-        month_topup_mpesa = MpesaTopupRequest.objects.filter(
-            status='success', created_at__gte=month_start
+        month_topup_kes = CardTerminalTopup.objects.filter(
+            created_at__gte=month_start
         ).aggregate(total=Sum('amount_kes'))['total'] or Decimal('0')
-
-        today_topup_manual = PaymentLog.objects.filter(
-            payment_method='Card Terminal Top-Up',
-            created_at__gte=today_start,
-        ).aggregate(total=Sum('amount_paid'))['total'] or Decimal('0')
-
-        month_topup_manual = PaymentLog.objects.filter(
-            payment_method='Card Terminal Top-Up',
-            created_at__gte=month_start,
-        ).aggregate(total=Sum('amount_paid'))['total'] or Decimal('0')
 
         total_bindings = CardBinding.objects.filter(is_active=True).count()
         offline_txn_count = CardTerminalTransaction.objects.filter(source='offline').count()
@@ -871,8 +910,8 @@ class CardTerminalStatsView(APIView):
             'online_devices': online_devices,
             'today_water_kes': str(round(today_water_kes, 2)),
             'month_water_kes': str(round(month_water_kes, 2)),
-            'today_topup_kes': str(round(today_topup_mpesa + today_topup_manual, 2)),
-            'month_topup_kes': str(round(month_topup_mpesa + month_topup_manual, 2)),
+            'today_topup_kes': str(round(today_topup_kes, 2)),
+            'month_topup_kes': str(round(month_topup_kes, 2)),
             'active_card_bindings': total_bindings,
             'offline_transactions': offline_txn_count,
             # Legacy aliases so existing frontend doesn't break before it's updated
@@ -1017,13 +1056,19 @@ class MpesaCallbackView(APIView):
                             pass
 
                         ref = f'MPESA-{topup.mpesa_receipt_number or topup.checkout_request_id[:16]}'
-                        PaymentLog.objects.create(
+                        try:
+                            ct_card_no = topup.customer.card_binding.card_no
+                        except (CardBinding.DoesNotExist, AttributeError):
+                            ct_card_no = ''
+                        CardTerminalTopup.objects.create(
                             customer=topup.customer,
-                            billing_type='PREPAID',
-                            amount_paid=topup.amount_kes,
-                            payment_method='M-Pesa',
-                            transaction_reference=ref,
-                            created_by=None,
+                            card_no=ct_card_no,
+                            amount_kes=topup.amount_kes,
+                            balance_after_kes=wallet.balance_kes,
+                            source='mpesa_stk',
+                            mpesa_receipt=topup.mpesa_receipt_number,
+                            phone_number=topup.phone_number,
+                            reference=ref,
                         )
                 logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
                             checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
@@ -1194,13 +1239,15 @@ class MpesaC2BConfirmationView(APIView):
                     if binding:
                         _upsert_whitelist(binding.card_no, 1)
 
-                    PaymentLog.objects.create(
+                    CardTerminalTopup.objects.create(
                         customer=customer,
-                        billing_type='PREPAID',
-                        amount_paid=amount_kes,
-                        payment_method='M-Pesa Paybill',
-                        transaction_reference=f'MPESA-{trans_id}',
-                        created_by=None,
+                        card_no=binding.card_no if binding else '',
+                        amount_kes=amount_kes,
+                        balance_after_kes=wallet.balance_kes,
+                        source='mpesa_c2b',
+                        mpesa_receipt=trans_id,
+                        phone_number=msisdn,
+                        reference=f'MPESA-{trans_id}',
                     )
                 logger.info('C2B topup OK: TransID=%s KES=%s customer=%s bill_ref=%s',
                             trans_id, amount_kes, customer.id, bill_ref)
