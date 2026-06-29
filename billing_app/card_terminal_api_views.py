@@ -1023,6 +1023,46 @@ class MpesaCallbackView(APIView):
                     logger.info('M-Pesa billing payment success: %s KES %s → billing %s receipt %s',
                                 checkout_request_id, topup.amount_kes, topup.billing_record_id, topup.mpesa_receipt_number)
 
+                elif topup.topup_type == 'prepaid' and topup.customer:
+                    # Prepaid smart meter top-up — credits balance_m3, not balance_kes
+                    from .models import UnitPrice
+                    from .smart_meter_views import _send_valve_command
+                    unit_price = UnitPrice.objects.order_by('-effective_date').first()
+                    if unit_price and unit_price.unit_price > 0:
+                        with db_transaction.atomic():
+                            wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
+                                customer=topup.customer,
+                                defaults={
+                                    'balance_m3': Decimal('0'),
+                                    'last_known_flow_m3': Decimal('0'),
+                                    'valve_status': 'unknown',
+                                },
+                            )
+                            was_exhausted = wallet.balance_m3 <= Decimal('0')
+                            m3_added = topup.amount_kes / unit_price.unit_price
+                            wallet.balance_m3 += m3_added
+                            wallet.save()
+
+                            if was_exhausted and wallet.balance_m3 > Decimal('0'):
+                                try:
+                                    meter = topup.customer.meter
+                                    if meter and meter.meter_address:
+                                        _send_valve_command(meter, 'open', 'topup', wallet)
+                                        wallet.save()
+                                except Exception:
+                                    logger.exception('Valve re-open failed after prepaid M-Pesa topup')
+
+                            PaymentLog.objects.create(
+                                customer=topup.customer,
+                                billing_type='PREPAID',
+                                amount_paid=topup.amount_kes,
+                                payment_method='Mpesa',
+                                transaction_reference=ref,
+                                created_by=topup.created_by,
+                            )
+                    logger.info('M-Pesa prepaid topup success: %s KES %s → customer %s receipt %s',
+                                checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
+
                 elif topup.customer:
                     # Card terminal wallet top-up
                     with db_transaction.atomic():

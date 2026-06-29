@@ -12,6 +12,7 @@ from .smart_meter_views import (
     SmartMeterStatusView,
     PrepaidWalletView,
     PrepaidTopupView,
+    PrepaidMpesaInitiateView,
     ValveControlView,
     SmartMeterCommandPendingView,
     SmartMeterCommandUpdateView,
@@ -71,6 +72,7 @@ urlpatterns = [
     # Prepaid wallet endpoints (Fengbo / m³ based)
     path('prepaid/topup/', PrepaidTopupView.as_view(), name='prepaid-topup'),
     path('prepaid/wallet/<uuid:customer_id>/', PrepaidWalletView.as_view(), name='prepaid-wallet'),
+    path('prepaid/mpesa/initiate/', PrepaidMpesaInitiateView.as_view(), name='prepaid-mpesa-initiate'),
 
     # Card terminal management API (JWT, frontend use)
     path('card-terminal/devices/', CardTerminalDeviceListView.as_view(), name='ct-devices'),

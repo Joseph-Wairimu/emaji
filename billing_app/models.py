@@ -363,9 +363,14 @@ class MpesaTopupRequest(models.Model):
         ('failed', 'Failed'),
         ('cancelled', 'Cancelled'),
     ]
+    TOPUP_TYPE_CHOICES = [
+        ('card_terminal', 'Card Terminal'),
+        ('prepaid', 'Prepaid Smart Meter'),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_topups')
     billing_record = models.ForeignKey('BillingRecord', on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_payments')
+    topup_type = models.CharField(max_length=20, choices=TOPUP_TYPE_CHOICES, default='card_terminal')
     amount_kes = models.DecimalField(max_digits=12, decimal_places=2)
     phone_number = models.CharField(max_length=20)
     checkout_request_id = models.CharField(max_length=100, unique=True, db_index=True)

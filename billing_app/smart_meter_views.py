@@ -16,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated, BasePermission
 from .models import (
     Meter, Customer, UnitPrice,
     SmartMeterReading, PrepaidWallet, ValveCommand,
-    ReadingLog, PaymentLog,
+    ReadingLog, PaymentLog, MpesaTopupRequest,
 )
 from .permissions import IsAdmin
 from .services.fengbo_cloud import FengboCloudService
@@ -549,3 +549,82 @@ class SmartMeterCommandAcknowledgeView(APIView):
             "Valve command '%s' acknowledged by meter %s", cmd.action, meter_address
         )
         return Response({"status": "ok", "acknowledged_action": cmd.action})
+
+
+class PrepaidMpesaInitiateView(APIView):
+    """
+    POST /api/prepaid/mpesa/initiate/
+    Body: { "customer_id": "<uuid>", "amount_kes": <number>, "phone_number": "07XXXXXXXX" }
+    Initiates an M-Pesa STK push for a prepaid smart meter top-up.
+    The callback credits balance_m3, re-opens the valve, and records a PREPAID PaymentLog.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        customer_id = request.data.get('customer_id')
+        amount_raw = request.data.get('amount_kes')
+        phone = str(request.data.get('phone_number', '')).strip()
+
+        if not customer_id or amount_raw is None or not phone:
+            return Response(
+                {'error': 'customer_id, amount_kes, and phone_number are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            amount_kes = Decimal(str(amount_raw))
+            if amount_kes <= 0:
+                raise ValueError
+        except (ValueError, Exception):
+            return Response({'error': 'amount_kes must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
+
+        phone = phone.replace('+', '').replace(' ', '').replace('-', '')
+        if phone.startswith('0'):
+            phone = '254' + phone[1:]
+        if not phone.startswith('254') or len(phone) != 12 or not phone.isdigit():
+            return Response(
+                {'error': 'Invalid phone number. Use 07XXXXXXXX or 254XXXXXXXXX format.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        customer = get_object_or_404(Customer, id=customer_id)
+
+        try:
+            from .services.mpesa import MpesaService
+            svc = MpesaService()
+            resp = svc.initiate_stk_push(
+                phone=phone,
+                amount=amount_kes,
+                account_ref=f'EMAJI-{str(customer_id)[:7].upper()}',
+                description='Water Top-Up',
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception:
+            logger.exception('M-Pesa STK initiation failed for prepaid customer %s', customer_id)
+            return Response({'error': 'M-Pesa service error'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if str(resp.get('ResponseCode', '')) != '0':
+            return Response(
+                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        checkout_request_id = resp.get('CheckoutRequestID', '')
+        merchant_request_id = resp.get('MerchantRequestID', '')
+
+        MpesaTopupRequest.objects.create(
+            customer=customer,
+            topup_type='prepaid',
+            amount_kes=amount_kes,
+            phone_number=phone,
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            created_by=request.user,
+        )
+
+        return Response({
+            'status': 'pending',
+            'checkout_request_id': checkout_request_id,
+            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+        })
