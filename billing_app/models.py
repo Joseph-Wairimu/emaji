@@ -295,18 +295,6 @@ class CardBinding(models.Model):
         return f"{self.card_no} → {self.customer}"
 
 
-class CardTerminalTariff(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100)
-    rate_per_m3 = models.DecimalField(max_digits=10, decimal_places=4)
-    pulses_per_m3 = models.PositiveIntegerField(default=1000)
-    offline_limit_kes = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('10.00'))
-    charge_mode = models.PositiveSmallIntegerField(default=1)
-    is_active = models.BooleanField(default=True)
-
-    def __str__(self):
-        return f"{self.name} — KES {self.rate_per_m3}/m³"
-
 
 class CardTerminalTransaction(models.Model):
     MODE_CHOICES = [(0, 'Payment'), (1, 'Balance Inquiry')]

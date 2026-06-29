@@ -163,9 +163,3 @@ MPESA_SHORTCODE = config('MPESA_SHORTCODE', default='')
 MPESA_PASSKEY = config('MPESA_PASSKEY', default='')
 MPESA_CALLBACK_URL = config('MPESA_CALLBACK_URL', default='')
 MPESA_BASE_URL = config('MPESA_BASE_URL', default='https://sandbox.safaricom.co.ke')
-
-# Card terminal tariff fallback — used when no CardTerminalTariff row is active
-CT_TARIFF_CHARGE_MODE = config('CT_TARIFF_CHARGE_MODE', default=0, cast=int)
-CT_TARIFF_PULSES_PER_M3 = config('CT_TARIFF_PULSES_PER_M3', default=1000, cast=int)
-CT_TARIFF_RATE_PER_M3 = config('CT_TARIFF_RATE_PER_M3', default='50.00')
-CT_TARIFF_OFFLINE_LIMIT_KES = config('CT_TARIFF_OFFLINE_LIMIT_KES', default='10.00')

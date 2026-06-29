@@ -19,7 +19,6 @@ import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 
-from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
@@ -28,10 +27,8 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import (
     CardBinding,
     CardTerminalDevice,
-    CardTerminalTariff,
     CardTerminalTransaction,
     CardTerminalWhitelistEntry,
-    Customer,
     PrepaidWallet,
 )
 
@@ -90,17 +87,6 @@ def _upsert_device(request) -> CardTerminalDevice | None:
     return device
 
 
-class _FallbackTariff:
-    """Used when no CardTerminalTariff row exists — values come from settings."""
-    charge_mode = int(getattr(settings, 'CT_TARIFF_CHARGE_MODE', 0))
-    pulses_per_m3 = int(getattr(settings, 'CT_TARIFF_PULSES_PER_M3', 1000))
-    rate_per_m3 = Decimal(str(getattr(settings, 'CT_TARIFF_RATE_PER_M3', '50.00')))
-    offline_limit_kes = Decimal(str(getattr(settings, 'CT_TARIFF_OFFLINE_LIMIT_KES', '10.00')))
-
-
-def _get_active_tariff():
-    return CardTerminalTariff.objects.filter(is_active=True).first() or _FallbackTariff()
-
 
 def _upsert_whitelist(card_no: str, operation: int) -> None:
     CardTerminalWhitelistEntry.objects.update_or_create(
@@ -108,25 +94,6 @@ def _upsert_whitelist(card_no: str, operation: int) -> None:
         defaults={'operation': operation},
     )
 
-
-def _build_success_response(wallet: PrepaidWallet, tariff: CardTerminalTariff,
-                             customer: Customer, amount_kes: Decimal) -> dict:
-    return {
-        'Status': 1,
-        'Msg': '',
-        'Name': f'{customer.first_name} {customer.last_name}'[:20],
-        'CardNo': wallet.customer.card_binding.card_no,
-        'Money': f'{wallet.balance_kes:.2f}',
-        'Subsidy': '0.00',
-        'ConMode': 0,
-        'ChargeMode': tariff.charge_mode,
-        'Pulses': tariff.pulses_per_m3,
-        'Rate': float(tariff.rate_per_m3),
-        'Timeflow': 1,
-        'Amount': f'{amount_kes:.2f}',
-        'Text': f'Used\r\n{amount_kes:.2f}\r\nBal\r\n{wallet.balance_kes:.2f}',
-        'ThermalControl': 0,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +120,7 @@ def server_time(request):
     wl_sum = int(body.get('WLSum', 0))
     current_wl_count = CardTerminalWhitelistEntry.objects.count()
 
-    tariff = _get_active_tariff()
-    off_amount = float(tariff.offline_limit_kes) if tariff else 10.0
+    off_amount = 10.0
     wl_update = 1 if current_wl_count != wl_sum else 0
     wl_page = 1 if wl_update else 0
 
@@ -209,8 +175,6 @@ def consum_transactions(request):
     if not order_no or not card_no:
         return _protocol_response({'Status': 0, 'Msg': 'Missing'})
 
-    tariff = _get_active_tariff()
-
     try:
         binding = CardBinding.objects.select_related('customer').get(card_no=card_no, is_active=True)
     except CardBinding.DoesNotExist:
@@ -251,9 +215,9 @@ def consum_transactions(request):
             'Money': f'{wallet.balance_kes:.2f}',
             'Subsidy': '0.00',
             'ConMode': 0,
-            'ChargeMode': tariff.charge_mode,
-            'Pulses': tariff.pulses_per_m3,
-            'Rate': float(tariff.rate_per_m3),
+            'ChargeMode': 0,
+            'Pulses': 1000,
+            'Rate': 50.0,
             'Timeflow': 1,
             'Amount': '0.00',
             'Text': f'Balance\r\n{wallet.balance_kes:.2f}',
@@ -275,9 +239,9 @@ def consum_transactions(request):
                     'Money': f'{wallet_now.balance_kes:.2f}',
                     'Subsidy': '0.00',
                     'ConMode': 0,
-                    'ChargeMode': tariff.charge_mode,
-                    'Pulses': tariff.pulses_per_m3,
-                    'Rate': float(tariff.rate_per_m3),
+                    'ChargeMode': 0,
+                    'Pulses': 1000,
+                    'Rate': 50.0,
                     'Timeflow': 1,
                     'Amount': f'{existing.amount_deducted_kes:.2f}',
                     'Text': f'Used\r\n{existing.amount_deducted_kes:.2f}\r\nBal\r\n{wallet_now.balance_kes:.2f}',
@@ -286,12 +250,7 @@ def consum_transactions(request):
 
             wallet = PrepaidWallet.objects.select_for_update().get(customer=customer)
 
-            if cons_water_volf > 0:
-                amount_kes = (Decimal(cons_water_volf) / Decimal(tariff.pulses_per_m3)) * tariff.rate_per_m3
-            elif amount_sent > Decimal('0'):
-                amount_kes = amount_sent
-            else:
-                amount_kes = Decimal('0.00')
+            amount_kes = amount_sent if amount_sent > Decimal('0') else Decimal('0.00')
 
             # Water is already dispensed — deduct regardless of balance (allow negative)
             wallet.balance_kes -= amount_kes
@@ -322,9 +281,9 @@ def consum_transactions(request):
             'Money': f'{wallet.balance_kes:.2f}',
             'Subsidy': '0.00',
             'ConMode': 0,
-            'ChargeMode': tariff.charge_mode,
-            'Pulses': tariff.pulses_per_m3,
-            'Rate': float(tariff.rate_per_m3),
+            'ChargeMode': 0,
+            'Pulses': 1000,
+            'Rate': 50.0,
             'Timeflow': 1,
             'Amount': f'{amount_kes:.2f}',
             'Text': f'Used\r\n{amount_kes:.2f}\r\nBal\r\n{wallet.balance_kes:.2f}',

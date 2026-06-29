@@ -3,7 +3,7 @@ from .models import (
     User, Role, Site, SiteAssignment, Customer, Meter,
     UnitPrice, BillingRecord, PaymentLog, ReadingLog,
     SmartMeterReading, PrepaidWallet, ValveCommand,
-    CardTerminalDevice, CardBinding, CardTerminalTariff,
+    CardTerminalDevice, CardBinding,
     CardTerminalTransaction, CardTerminalWhitelistEntry,
 )
 
@@ -106,11 +106,6 @@ class CardBindingAdmin(admin.ModelAdmin):
     search_fields = ['card_no', 'customer__first_name', 'customer__last_name']
     raw_id_fields = ['customer']
 
-
-@admin.register(CardTerminalTariff)
-class CardTerminalTariffAdmin(admin.ModelAdmin):
-    list_display = ['name', 'rate_per_m3', 'pulses_per_m3', 'offline_limit_kes', 'charge_mode', 'is_active']
-    list_filter = ['is_active']
 
 
 @admin.register(CardTerminalTransaction)

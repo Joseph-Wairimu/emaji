@@ -24,7 +24,6 @@ from django.db import transaction as db_transaction
 from .models import (
     CardBinding,
     CardTerminalDevice,
-    CardTerminalTariff,
     CardTerminalTopup,
     CardTerminalTransaction,
     CardTerminalWhitelistEntry,
@@ -33,7 +32,7 @@ from .models import (
     PrepaidWallet,
     Site,
 )
-from .permissions import IsAdmin, IsStaff
+from .permissions import IsAdmin
 from .views_card_terminal import _upsert_whitelist
 
 logger = logging.getLogger(__name__)
@@ -315,12 +314,6 @@ def _auto_import_nuomiy_cardholder(c: dict) -> 'CardBinding | None':
         logger.exception('Failed to auto-import Nuomiy card %s', card_no)
         return None
 
-
-class CardTerminalTariffSerializer(drf_serializers.ModelSerializer):
-    class Meta:
-        model = CardTerminalTariff
-        fields = ['id', 'name', 'rate_per_m3', 'pulses_per_m3',
-                  'offline_limit_kes', 'charge_mode', 'is_active']
 
 
 class CardTerminalTransactionSerializer(drf_serializers.ModelSerializer):
@@ -635,40 +628,6 @@ class CardBindingDetailView(APIView):
         binding.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-
-class CardTerminalTariffListCreateView(APIView):
-    """
-    GET  /api/card-terminal/tariffs/ — list tariffs (any staff)
-    POST /api/card-terminal/tariffs/ — create tariff (admin only)
-    """
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [IsStaff()]
-        return [IsAdmin()]
-
-    def get(self, request):
-        tariffs = CardTerminalTariff.objects.order_by('-is_active', 'name')
-        return Response(CardTerminalTariffSerializer(tariffs, many=True).data)
-
-    def post(self, request):
-        serializer = CardTerminalTariffSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class CardTerminalTariffDetailView(APIView):
-    """PATCH /api/card-terminal/tariffs/<id>/ — update tariff."""
-    permission_classes = [IsAuthenticated, IsAdmin]
-
-    def patch(self, request, tariff_id):
-        tariff = get_object_or_404(CardTerminalTariff, id=tariff_id)
-        serializer = CardTerminalTariffSerializer(tariff, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CardTerminalTransactionListView(APIView):
