@@ -817,32 +817,14 @@ class CardTerminalStatsView(APIView):
     def get(self, request):
         from django.db.models import Sum
         from django.utils import timezone
-        from datetime import timedelta
 
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        # Device counts — prefer Nuomiy as source of truth
-        total_devices = 0
-        online_devices = 0
-        if settings.NUOMIY_APP_ID:
-            try:
-                from .services.nuomiy_cloud import NuomiyCloudService
-                resp = NuomiyCloudService().get_devices(page_size=200)
-                rows = _nuomiy_rows(resp)
-                if rows:
-                    total_devices = len(rows)
-                    online_devices = sum(1 for d in rows if int(d.get('onlineStatus', 0)) == 1)
-            except Exception as e:
-                logger.warning('Stats: Nuomiy device count failed (%s) — using local DB', e)
-
-        if total_devices == 0:
-            total_devices = CardTerminalDevice.objects.filter(is_active=True).count()
-            online_devices = CardTerminalDevice.objects.filter(
-                is_active=True,
-                last_seen_at__gte=now - timedelta(minutes=2),
-            ).count()
+        # Device counts — match the devices table which uses is_active as the "Online" indicator
+        total_devices = CardTerminalDevice.objects.filter(is_active=True).count()
+        online_devices = total_devices
 
         # Water revenue — purely from CardTerminalTransaction (mode=0 deductions)
         txn_qs = CardTerminalTransaction.objects.filter(is_successful=True, mode=0)
