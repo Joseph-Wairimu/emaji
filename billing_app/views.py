@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.http import HttpResponse
 from django.db import models as django_models
-from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog
+from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog, MpesaTopupRequest
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
     CustomerSerializer, MeterSerializer, UnitPriceSerializer,
@@ -366,4 +366,121 @@ class AnalyticsView(APIView):
             "monthly_breakdown": monthly_breakdown,
             "current_month_billed": str(round(current_month_billed, 2)),
             "current_month_collected": str(round(total_paid_raw, 2)),
+        })
+
+
+import logging as _logging
+_billing_mpesa_logger = _logging.getLogger(__name__)
+
+
+class BillingMpesaInitiateView(APIView):
+    """
+    POST /api/billing/mpesa/initiate/
+    Body: { "billing_record_id": "<uuid>", "amount_kes": <number>, "phone_number": "07XXXXXXXX" }
+    Initiates an M-Pesa STK push for a billing record payment.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.shortcuts import get_object_or_404
+        billing_record_id = request.data.get('billing_record_id')
+        amount_raw = request.data.get('amount_kes')
+        phone = str(request.data.get('phone_number', '')).strip()
+
+        if not billing_record_id or amount_raw is None or not phone:
+            return Response(
+                {'error': 'billing_record_id, amount_kes, and phone_number are required'},
+                status=400,
+            )
+
+        try:
+            amount_kes = Decimal(str(amount_raw))
+            if amount_kes <= 0:
+                raise ValueError
+        except (ValueError, Exception):
+            return Response({'error': 'amount_kes must be a positive number'}, status=400)
+
+        phone = phone.replace('+', '').replace(' ', '').replace('-', '')
+        if phone.startswith('0'):
+            phone = '254' + phone[1:]
+        if not phone.startswith('254') or len(phone) != 12 or not phone.isdigit():
+            return Response(
+                {'error': 'Invalid phone number. Use 07XXXXXXXX or 254XXXXXXXXX format.'},
+                status=400,
+            )
+
+        billing = get_object_or_404(BillingRecord, id=billing_record_id)
+
+        try:
+            from .services.mpesa import MpesaService
+            svc = MpesaService()
+            resp = svc.initiate_stk_push(
+                phone=phone,
+                amount=amount_kes,
+                account_ref=f'EMAJI-{str(billing_record_id)[:7].upper()}',
+                description='Water Bill Payment',
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=503)
+        except Exception as e:
+            _billing_mpesa_logger.exception('M-Pesa STK initiation failed for billing %s', billing_record_id)
+            return Response({'error': f'M-Pesa service error: {str(e)}'}, status=502)
+
+        if str(resp.get('ResponseCode', '')) != '0':
+            return Response(
+                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
+                status=502,
+            )
+
+        checkout_request_id = resp.get('CheckoutRequestID', '')
+        merchant_request_id = resp.get('MerchantRequestID', '')
+
+        MpesaTopupRequest.objects.create(
+            customer=billing.customer,
+            billing_record=billing,
+            amount_kes=amount_kes,
+            phone_number=phone,
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            created_by=request.user,
+        )
+
+        return Response({
+            'status': 'pending',
+            'checkout_request_id': checkout_request_id,
+            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+        })
+
+
+class BillingMpesaStatusView(APIView):
+    """
+    GET /api/billing/mpesa/status/<checkout_request_id>/
+    Polls the status of a billing M-Pesa STK push.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, checkout_request_id):
+        from django.shortcuts import get_object_or_404
+        topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
+
+        if topup.status == 'pending':
+            try:
+                from .services.mpesa import MpesaService
+                resp = MpesaService().query_stk_push(checkout_request_id)
+                result_code = str(resp.get('ResultCode', ''))
+                if result_code in ('1032', '1037'):
+                    topup.status = 'cancelled'
+                    topup.result_code = result_code
+                    topup.result_desc = resp.get('ResultDesc', 'Cancelled by user')
+                    topup.save()
+            except Exception:
+                pass
+
+        return Response({
+            'status': topup.status,
+            'amount_kes': str(topup.amount_kes),
+            'phone_number': topup.phone_number,
+            'mpesa_receipt_number': topup.mpesa_receipt_number,
+            'result_desc': topup.result_desc,
+            'created_at': topup.created_at.isoformat(),
         })

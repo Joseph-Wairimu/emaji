@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from django.db import transaction as db_transaction
 
 from .models import (
+    BillingRecord,
     CardBinding,
     CardTerminalDevice,
     CardTerminalTopup,
@@ -29,6 +30,7 @@ from .models import (
     CardTerminalWhitelistEntry,
     Customer,
     MpesaTopupRequest,
+    PaymentLog,
     PrepaidWallet,
     Site,
 )
@@ -995,7 +997,34 @@ class MpesaCallbackView(APIView):
                 topup.status = 'success'
                 topup.save()
 
-                if topup.customer:
+                ref = f'MPESA-{topup.mpesa_receipt_number or topup.checkout_request_id[:16]}'
+
+                if topup.billing_record_id:
+                    # Billing record payment (postpaid/manual/smart meter)
+                    with db_transaction.atomic():
+                        billing = BillingRecord.objects.select_for_update().get(id=topup.billing_record_id)
+                        billing.amount_paid += topup.amount_kes
+                        billing.current_amount_paid = topup.amount_kes
+                        billing.balance = billing.amount_due - billing.amount_paid
+                        billing.payment_status = (
+                            'PAID' if billing.balance <= 0 else
+                            'PARTIAL' if billing.amount_paid > 0 else
+                            'UNPAID'
+                        )
+                        billing.save()
+                        PaymentLog.objects.create(
+                            billing_record=billing,
+                            amount_paid=topup.amount_kes,
+                            payment_method='Mpesa',
+                            transaction_reference=ref,
+                            created_by=topup.created_by,
+                            billing_type='POSTPAID',
+                        )
+                    logger.info('M-Pesa billing payment success: %s KES %s → billing %s receipt %s',
+                                checkout_request_id, topup.amount_kes, topup.billing_record_id, topup.mpesa_receipt_number)
+
+                elif topup.customer:
+                    # Card terminal wallet top-up
                     with db_transaction.atomic():
                         wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
                             customer=topup.customer,
@@ -1014,7 +1043,6 @@ class MpesaCallbackView(APIView):
                         except CardBinding.DoesNotExist:
                             pass
 
-                        ref = f'MPESA-{topup.mpesa_receipt_number or topup.checkout_request_id[:16]}'
                         try:
                             ct_card_no = topup.customer.card_binding.card_no
                         except (CardBinding.DoesNotExist, AttributeError):
@@ -1029,8 +1057,8 @@ class MpesaCallbackView(APIView):
                             phone_number=topup.phone_number,
                             reference=ref,
                         )
-                logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
-                            checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
+                    logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
+                                checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
             else:
                 topup.status = 'failed' if result_code != '1032' else 'cancelled'
                 topup.save()

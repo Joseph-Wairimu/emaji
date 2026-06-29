@@ -5,6 +5,7 @@ from .views import (
     UserViewSet, RoleViewSet, SiteViewSet, SiteAssignmentViewSet,
     CustomerViewSet, MeterViewSet, UnitPriceViewSet,
     BillingRecordViewSet, PaymentLogViewSet, ReadingLogViewSet, AnalyticsView, CustomTokenObtainPairView,
+    BillingMpesaInitiateView, BillingMpesaStatusView,
 )
 from .smart_meter_views import (
     SmartMeterIngestView,
@@ -81,6 +82,10 @@ urlpatterns = [
     path('card-terminal/basesettings/', CardTerminalBasesettingsView.as_view(), name='ct-basesettings'),
     path('card-terminal/topup/', CardTerminalTopupView.as_view(), name='ct-topup'),
     path('card-terminal/stats/', CardTerminalStatsView.as_view(), name='ct-stats'),
+
+    # M-Pesa STK push for billing record payments (postpaid / smart meter)
+    path('billing/mpesa/initiate/', BillingMpesaInitiateView.as_view(), name='billing-mpesa-initiate'),
+    path('billing/mpesa/status/<str:checkout_request_id>/', BillingMpesaStatusView.as_view(), name='billing-mpesa-status'),
 
     # M-Pesa STK push for card terminal top-ups
     path('card-terminal/mpesa/initiate/', CardTerminalMpesaInitiateView.as_view(), name='ct-mpesa-initiate'),
