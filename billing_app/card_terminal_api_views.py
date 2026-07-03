@@ -1053,6 +1053,7 @@ class MpesaCallbackView(APIView):
 
                 elif topup.customer:
                     # Card terminal wallet top-up
+                    binding = None
                     with db_transaction.atomic():
                         wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
                             customer=topup.customer,
@@ -1071,10 +1072,7 @@ class MpesaCallbackView(APIView):
                         except CardBinding.DoesNotExist:
                             pass
 
-                        try:
-                            ct_card_no = topup.customer.card_binding.card_no
-                        except (CardBinding.DoesNotExist, AttributeError):
-                            ct_card_no = ''
+                        ct_card_no = binding.card_no if binding else ''
                         CardTerminalTopup.objects.create(
                             customer=topup.customer,
                             card_no=ct_card_no,
@@ -1085,6 +1083,11 @@ class MpesaCallbackView(APIView):
                             phone_number=topup.phone_number,
                             reference=ref,
                         )
+
+                    # Mirror recharge to Nuomiy — mpesa STK top-ups previously skipped this step
+                    if binding:
+                        _nuomiy_recharge(binding, topup.amount_kes)
+
                     logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
                                 checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
             else:
