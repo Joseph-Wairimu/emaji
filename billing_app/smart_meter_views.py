@@ -1,6 +1,6 @@
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
 from dateutil import parser as date_parser
 
@@ -572,11 +572,11 @@ class PrepaidMpesaInitiateView(APIView):
             )
 
         try:
-            amount_kes = Decimal(str(amount_raw))
+            amount_kes = Decimal(str(amount_raw)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
             if amount_kes <= 0:
                 raise ValueError
         except (ValueError, Exception):
-            return Response({'error': 'amount_kes must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'amount_kes must be a positive whole number'}, status=status.HTTP_400_BAD_REQUEST)
 
         phone = phone.replace('+', '').replace(' ', '').replace('-', '')
         if phone.startswith('0'):

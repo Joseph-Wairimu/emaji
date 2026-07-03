@@ -15,7 +15,7 @@ from .serializers import (
 from .permissions import IsAdmin, IsSiteManagerForSite, IsMeterReaderForSite
 from rest_framework.views import APIView
 from django.db.models import Sum, OuterRef, Subquery, Q, F, ExpressionWrapper
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.db.models import Sum, Value
 from django.db.models.functions import Coalesce
@@ -394,11 +394,11 @@ class BillingMpesaInitiateView(APIView):
             )
 
         try:
-            amount_kes = Decimal(str(amount_raw))
+            amount_kes = Decimal(str(amount_raw)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
             if amount_kes <= 0:
                 raise ValueError
         except (ValueError, Exception):
-            return Response({'error': 'amount_kes must be a positive number'}, status=400)
+            return Response({'error': 'amount_kes must be a positive whole number'}, status=400)
 
         phone = phone.replace('+', '').replace(' ', '').replace('-', '')
         if phone.startswith('0'):
@@ -451,25 +451,14 @@ class BillingMpesaInitiateView(APIView):
 class BillingMpesaStatusView(APIView):
     """
     GET /api/billing/mpesa/status/<checkout_request_id>/
-    Polls the status of a billing M-Pesa STK push.
+    Polls the status of a billing M-Pesa STK push. The webhook is authoritative
+    and settles the payment; this just reads the current local status.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, checkout_request_id):
         from django.shortcuts import get_object_or_404
         topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
-
-        if topup.status == 'pending':
-            try:
-                from .services.merchant_api import MerchantApiService
-                transaction = MerchantApiService().get_transaction(checkout_request_id)
-                if transaction.get('status') == 'FAILED':
-                    topup.status = 'failed'
-                    topup.result_code = str(transaction.get('resultCode', ''))
-                    topup.result_desc = transaction.get('errorMessage') or transaction.get('resultDesc', '')
-                    topup.save()
-            except Exception:
-                pass
 
         return Response({
             'status': topup.status,

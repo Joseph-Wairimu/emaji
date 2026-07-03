@@ -11,7 +11,7 @@ import json
 import uuid
 import logging
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
@@ -888,11 +888,11 @@ class CardTerminalMpesaInitiateView(APIView):
             )
 
         try:
-            amount_kes = Decimal(str(amount_raw))
+            amount_kes = Decimal(str(amount_raw)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
             if amount_kes <= 0:
                 raise ValueError
         except (ValueError, Exception):
-            return Response({'error': 'amount_kes must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'amount_kes must be a positive whole number'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Normalise phone → 254XXXXXXXXX
         phone = phone.replace('+', '').replace(' ', '').replace('-', '')
@@ -1102,25 +1102,13 @@ class MpesaCallbackView(APIView):
 class CardTerminalMpesaStatusView(APIView):
     """
     GET /api/card-terminal/mpesa/status/<checkout_request_id>/
-    Polls status of a pending STK push. Reconciles via the Merchant Transactions
-    API if the webhook hasn't arrived yet.
+    Polls status of a pending STK push. The webhook is authoritative and settles
+    the payment; this just reads the current local status for the frontend to poll.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, checkout_request_id):
         topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
-
-        if topup.status == 'pending':
-            try:
-                from .services.merchant_api import MerchantApiService
-                transaction = MerchantApiService().get_transaction(checkout_request_id)
-                if transaction.get('status') == 'FAILED':
-                    topup.status = 'failed'
-                    topup.result_code = str(transaction.get('resultCode', ''))
-                    topup.result_desc = transaction.get('errorMessage') or transaction.get('resultDesc', '')
-                    topup.save()
-            except Exception:
-                pass  # Webhook is authoritative; query is best-effort
 
         return Response({
             'status': topup.status,
