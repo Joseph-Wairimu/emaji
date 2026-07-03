@@ -7,6 +7,7 @@ mirrored to the Nuomiy platform as best-effort background calls. Failures
 are logged but never surface as errors to the caller — E-Maji's local DB
 is the source of truth.
 """
+import json
 import uuid
 import logging
 from datetime import date, timedelta
@@ -905,14 +906,17 @@ class CardTerminalMpesaInitiateView(APIView):
 
         customer = get_object_or_404(Customer, id=customer_id)
 
+        external_id = f'CT-{str(customer_id)[:8]}'
+
         try:
-            from .services.mpesa import MpesaService
-            svc = MpesaService()
-            resp = svc.initiate_stk_push(
+            from .services.merchant_api import MerchantApiService
+            svc = MerchantApiService()
+            transaction = svc.initiate_stk_push(
                 phone=phone,
                 amount=amount_kes,
-                account_ref=f'EMAJI-{str(customer_id)[:7].upper()}',
-                description='Water Top-Up',
+                account_reference=f'EMAJI-{str(customer_id)[:7].upper()}',
+                transaction_desc='Water Top-Up',
+                external_id=external_id,
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -920,62 +924,64 @@ class CardTerminalMpesaInitiateView(APIView):
             logger.exception('M-Pesa STK initiation failed for customer %s', customer_id)
             return Response({'error': f'M-Pesa service error: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
 
-        if str(resp.get('ResponseCode', '')) != '0':
-            return Response(
-                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        checkout_request_id = resp.get('CheckoutRequestID', '')
-        merchant_request_id = resp.get('MerchantRequestID', '')
+        checkout_request_id = transaction.get('id', '')
 
         MpesaTopupRequest.objects.create(
             customer=customer,
             amount_kes=amount_kes,
             phone_number=phone,
             checkout_request_id=checkout_request_id,
-            merchant_request_id=merchant_request_id,
+            merchant_request_id=external_id,
             created_by=request.user,
         )
 
         return Response({
             'status': 'pending',
             'checkout_request_id': checkout_request_id,
-            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+            'customer_message': 'Check your phone and enter your M-Pesa PIN.',
         })
 
 
 class MpesaCallbackView(APIView):
     """
     POST /api/card-terminal/mpesa/callback/
-    Safaricom Daraja callback — no JWT, no CSRF. Credits wallet on ResultCode=0.
+    Merchant Transactions API webhook — no JWT, no CSRF. Verified via
+    X-Webhook-Signature (HMAC-SHA512, MERCHANT_API_WEBHOOK_SECRET).
+    Credits wallet when the transaction's status is COMPLETED.
     """
     permission_classes = []
     authentication_classes = []
 
     def post(self, request):
+        from .services.merchant_api import verify_webhook_signature
+
+        raw_body = request.body
+        signature = request.headers.get('X-Webhook-Signature', '')
+        if not verify_webhook_signature(raw_body, signature):
+            logger.warning('M-Pesa webhook: invalid or missing signature')
+            return Response({'error': 'invalid signature'}, status=401)
+
         try:
-            body = request.data.get('Body', {})
-            cb = body.get('stkCallback', {})
-            checkout_request_id = cb.get('CheckoutRequestID', '')
-            result_code = str(cb.get('ResultCode', ''))
-            result_desc = cb.get('ResultDesc', '')
+            payload = json.loads(raw_body)
+            transaction = payload.get('data', {})
+            checkout_request_id = transaction.get('id', '')
+            txn_status = transaction.get('status', '')
+            result_code = str(transaction.get('resultCode', ''))
+            result_desc = transaction.get('resultDesc', '') or transaction.get('errorMessage', '')
 
             topup = MpesaTopupRequest.objects.filter(checkout_request_id=checkout_request_id).first()
             if not topup:
-                logger.warning('M-Pesa callback: unknown CheckoutRequestID %s', checkout_request_id)
-                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+                logger.warning('M-Pesa callback: unknown transaction id %s', checkout_request_id)
+                return Response({'received': True})
 
             if topup.status != 'pending':
-                return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+                return Response({'received': True})
 
             topup.result_code = result_code
             topup.result_desc = result_desc
 
-            if result_code == '0':
-                items = cb.get('CallbackMetadata', {}).get('Item', [])
-                receipt = next((i.get('Value', '') for i in items if i.get('Name') == 'MpesaReceiptNumber'), '')
-                topup.mpesa_receipt_number = str(receipt)
+            if txn_status == 'COMPLETED':
+                topup.mpesa_receipt_number = str(transaction.get('receiptNumber', ''))
                 topup.status = 'success'
                 topup.save()
 
@@ -1082,20 +1088,22 @@ class MpesaCallbackView(APIView):
                     logger.info('M-Pesa topup success: %s KES %s → customer %s receipt %s',
                                 checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
             else:
-                topup.status = 'failed' if result_code != '1032' else 'cancelled'
+                topup.status = 'failed'
                 topup.save()
-                logger.info('M-Pesa topup %s: code=%s desc=%s', checkout_request_id, result_code, result_desc)
+                logger.info('M-Pesa topup %s: status=%s code=%s desc=%s',
+                            checkout_request_id, txn_status, result_code, result_desc)
 
         except Exception:
             logger.exception('M-Pesa callback processing error')
 
-        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+        return Response({'received': True})
 
 
 class CardTerminalMpesaStatusView(APIView):
     """
     GET /api/card-terminal/mpesa/status/<checkout_request_id>/
-    Polls status of a pending STK push. Optionally queries Daraja if still pending.
+    Polls status of a pending STK push. Reconciles via the Merchant Transactions
+    API if the webhook hasn't arrived yet.
     """
     permission_classes = [IsAuthenticated]
 
@@ -1104,17 +1112,15 @@ class CardTerminalMpesaStatusView(APIView):
 
         if topup.status == 'pending':
             try:
-                from .services.mpesa import MpesaService
-                resp = MpesaService().query_stk_push(checkout_request_id)
-                result_code = str(resp.get('ResultCode', ''))
-                if result_code in ('1032', '1037'):
-                    # User cancelled or timeout
-                    topup.status = 'cancelled'
-                    topup.result_code = result_code
-                    topup.result_desc = resp.get('ResultDesc', 'Cancelled by user')
+                from .services.merchant_api import MerchantApiService
+                transaction = MerchantApiService().get_transaction(checkout_request_id)
+                if transaction.get('status') == 'FAILED':
+                    topup.status = 'failed'
+                    topup.result_code = str(transaction.get('resultCode', ''))
+                    topup.result_desc = transaction.get('errorMessage') or transaction.get('resultDesc', '')
                     topup.save()
             except Exception:
-                pass  # Callback is authoritative; query is best-effort
+                pass  # Webhook is authoritative; query is best-effort
 
         return Response({
             'status': topup.status,

@@ -589,14 +589,17 @@ class PrepaidMpesaInitiateView(APIView):
 
         customer = get_object_or_404(Customer, id=customer_id)
 
+        external_id = f'PREPAID-{str(customer_id)[:8]}'
+
         try:
-            from .services.mpesa import MpesaService
-            svc = MpesaService()
-            resp = svc.initiate_stk_push(
+            from .services.merchant_api import MerchantApiService
+            svc = MerchantApiService()
+            transaction = svc.initiate_stk_push(
                 phone=phone,
                 amount=amount_kes,
-                account_ref=f'EMAJI-{str(customer_id)[:7].upper()}',
-                description='Water Top-Up',
+                account_reference=f'EMAJI-{str(customer_id)[:7].upper()}',
+                transaction_desc='Water Top-Up',
+                external_id=external_id,
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -604,14 +607,7 @@ class PrepaidMpesaInitiateView(APIView):
             logger.exception('M-Pesa STK initiation failed for prepaid customer %s', customer_id)
             return Response({'error': 'M-Pesa service error'}, status=status.HTTP_502_BAD_GATEWAY)
 
-        if str(resp.get('ResponseCode', '')) != '0':
-            return Response(
-                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        checkout_request_id = resp.get('CheckoutRequestID', '')
-        merchant_request_id = resp.get('MerchantRequestID', '')
+        checkout_request_id = transaction.get('id', '')
 
         MpesaTopupRequest.objects.create(
             customer=customer,
@@ -619,12 +615,12 @@ class PrepaidMpesaInitiateView(APIView):
             amount_kes=amount_kes,
             phone_number=phone,
             checkout_request_id=checkout_request_id,
-            merchant_request_id=merchant_request_id,
+            merchant_request_id=external_id,
             created_by=request.user,
         )
 
         return Response({
             'status': 'pending',
             'checkout_request_id': checkout_request_id,
-            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+            'customer_message': 'Check your phone and enter your M-Pesa PIN.',
         })

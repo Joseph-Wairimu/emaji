@@ -411,14 +411,17 @@ class BillingMpesaInitiateView(APIView):
 
         billing = get_object_or_404(BillingRecord, id=billing_record_id)
 
+        external_id = f'BILL-{str(billing_record_id)[:8]}'
+
         try:
-            from .services.mpesa import MpesaService
-            svc = MpesaService()
-            resp = svc.initiate_stk_push(
+            from .services.merchant_api import MerchantApiService
+            svc = MerchantApiService()
+            transaction = svc.initiate_stk_push(
                 phone=phone,
                 amount=amount_kes,
-                account_ref=f'EMAJI-{str(billing_record_id)[:7].upper()}',
-                description='Water Bill Payment',
+                account_reference=f'EMAJI-{str(billing_record_id)[:7].upper()}',
+                transaction_desc='Water Bill Payment',
+                external_id=external_id,
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=503)
@@ -426,14 +429,7 @@ class BillingMpesaInitiateView(APIView):
             _billing_mpesa_logger.exception('M-Pesa STK initiation failed for billing %s', billing_record_id)
             return Response({'error': f'M-Pesa service error: {str(e)}'}, status=502)
 
-        if str(resp.get('ResponseCode', '')) != '0':
-            return Response(
-                {'error': resp.get('ResponseDescription', 'M-Pesa initiation failed')},
-                status=502,
-            )
-
-        checkout_request_id = resp.get('CheckoutRequestID', '')
-        merchant_request_id = resp.get('MerchantRequestID', '')
+        checkout_request_id = transaction.get('id', '')
 
         MpesaTopupRequest.objects.create(
             customer=billing.customer,
@@ -441,14 +437,14 @@ class BillingMpesaInitiateView(APIView):
             amount_kes=amount_kes,
             phone_number=phone,
             checkout_request_id=checkout_request_id,
-            merchant_request_id=merchant_request_id,
+            merchant_request_id=external_id,
             created_by=request.user,
         )
 
         return Response({
             'status': 'pending',
             'checkout_request_id': checkout_request_id,
-            'customer_message': resp.get('CustomerMessage', 'Check your phone and enter your M-Pesa PIN.'),
+            'customer_message': 'Check your phone and enter your M-Pesa PIN.',
         })
 
 
@@ -465,13 +461,12 @@ class BillingMpesaStatusView(APIView):
 
         if topup.status == 'pending':
             try:
-                from .services.mpesa import MpesaService
-                resp = MpesaService().query_stk_push(checkout_request_id)
-                result_code = str(resp.get('ResultCode', ''))
-                if result_code in ('1032', '1037'):
-                    topup.status = 'cancelled'
-                    topup.result_code = result_code
-                    topup.result_desc = resp.get('ResultDesc', 'Cancelled by user')
+                from .services.merchant_api import MerchantApiService
+                transaction = MerchantApiService().get_transaction(checkout_request_id)
+                if transaction.get('status') == 'FAILED':
+                    topup.status = 'failed'
+                    topup.result_code = str(transaction.get('resultCode', ''))
+                    topup.result_desc = transaction.get('errorMessage') or transaction.get('resultDesc', '')
                     topup.save()
             except Exception:
                 pass
