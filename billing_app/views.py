@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.http import HttpResponse
 from django.db import models as django_models
-from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog, MpesaTopupRequest
+from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog, MpesaTopupRequest, PrepaidWallet
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
     CustomerSerializer, MeterSerializer, UnitPriceSerializer,
@@ -248,19 +248,30 @@ class AnalyticsView(APIView):
     def get(self, request):
         now = timezone.now()  # fresh per-request timestamp — never use module-level now
         user = request.user
+        scope = request.query_params.get("scope", "manual").lower()
+        if scope not in ("manual", "smart"):
+            scope = "manual"
 
         if user.role and user.role.name.upper() != "SUPER_ADMIN":
             assigned_sites = SiteAssignment.objects.filter(user=user).values_list("site_id", flat=True)
-            billing_records = BillingRecord.objects.filter(customer__site_id__in=assigned_sites)
-            customers = Customer.objects.filter(site_id__in=assigned_sites)
-            payment_logs = PaymentLog.objects.filter(
-                Q(billing_record__customer__site_id__in=assigned_sites) |
-                Q(billing_record__isnull=True, customer__site_id__in=assigned_sites)
-            )
+            site_q = Q(site_id__in=assigned_sites)
         else:
-            billing_records = BillingRecord.objects.all()
-            customers = Customer.objects.all()
-            payment_logs = PaymentLog.objects.all()
+            site_q = Q()
+
+        site_customers = Customer.objects.filter(site_q)
+
+        if scope == "smart":
+            return Response(self._smart_scope(now, site_customers))
+        return Response(self._manual_scope(now, site_customers))
+
+    def _manual_scope(self, now, site_customers):
+        """Postpaid / manually-read meters — BillingRecord + PaymentLog(billing_type=POSTPAID)."""
+        customers = site_customers.filter(meter__meter_type="MANUAL")
+        billing_records = BillingRecord.objects.filter(customer__in=site_customers, meter__meter_type="MANUAL")
+        payment_logs = PaymentLog.objects.filter(billing_type="POSTPAID").filter(
+            Q(billing_record__customer__in=site_customers, billing_record__meter__meter_type="MANUAL") |
+            Q(billing_record__isnull=True, customer__in=site_customers, customer__meter__meter_type="MANUAL")
+        )
 
         # ── Current month boundaries ────────────────────────────────────
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -351,7 +362,8 @@ class AnalyticsView(APIView):
 
         current_month_billed = _billed_for_qs(current_month_records)
 
-        return Response({
+        return {
+            "scope": "manual",
             "expected_amount": str(round(expected_amount, 2)),
             "total_amount_paid_raw": str(round(total_paid_raw, 2)),
             "total_amount_to_be_paid": str(round(expected_amount, 2)),
@@ -366,7 +378,109 @@ class AnalyticsView(APIView):
             "monthly_breakdown": monthly_breakdown,
             "current_month_billed": str(round(current_month_billed, 2)),
             "current_month_collected": str(round(total_paid_raw, 2)),
-        })
+        }
+
+    def _smart_scope(self, now, site_customers):
+        """Prepaid smart meters — PrepaidWallet + ReadingLog/PaymentLog(billing_type=PREPAID).
+
+        """
+        unit_price_obj = UnitPrice.objects.order_by("-effective_date").first()
+        unit_price = unit_price_obj.unit_price if unit_price_obj else Decimal("0")
+
+        customers = site_customers.filter(meter__meter_type="SMART")
+        reading_logs = ReadingLog.objects.filter(billing_type="PREPAID", customer__in=customers)
+        payment_logs = PaymentLog.objects.filter(billing_type="PREPAID", customer__in=customers)
+        wallets = PrepaidWallet.objects.filter(customer__in=customers)
+
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if now.month == 12:
+            end_of_month = start_of_month.replace(year=now.year + 1, month=1)
+        else:
+            end_of_month = start_of_month.replace(month=now.month + 1)
+
+        def _consumption_for_qs(qs):
+            agg = qs.aggregate(
+                new_sum=Coalesce(Sum("new_reading"), Value(Decimal("0"))),
+                prev_sum=Coalesce(Sum("previous_reading"), Value(Decimal("0"))),
+            )
+            return agg["new_sum"] - agg["prev_sum"]
+
+        # "Outstanding"-equivalent: value of prepaid credit already used up (wallet negative)
+        negative_wallets = wallets.filter(balance_m3__lt=0)
+        expected_amount = abs(negative_wallets.aggregate(
+            total=Coalesce(Sum("balance_m3"), Value(Decimal("0")))
+        )["total"]) * unit_price
+
+        # "Overpayment"-equivalent: unused prepaid credit still sitting in wallets
+        positive_wallets = wallets.filter(balance_m3__gt=0)
+        overpayment = positive_wallets.aggregate(
+            total=Coalesce(Sum("balance_m3"), Value(Decimal("0")))
+        )["total"] * unit_price
+
+        total_paid_raw = payment_logs.filter(
+            payment_date__gte=start_of_month,
+            payment_date__lt=end_of_month,
+        ).aggregate(total=Coalesce(Sum("amount_paid"), Value(Decimal("0"))))["total"]
+
+        current_month_logs = reading_logs.filter(
+            recorded_at__gte=start_of_month,
+            recorded_at__lt=end_of_month,
+        )
+        total_consumption_current_month_units = _consumption_for_qs(current_month_logs)
+
+        total_bills = reading_logs.count()
+        total_customers = customers.count()
+        customers_with_debt = wallets.filter(balance_m3__lte=0).count()
+        customers_paid = wallets.filter(balance_m3__gt=0).count()
+
+        payment_completion_rate = (
+            (Decimal(customers_paid) / total_customers * 100) if total_customers > 0 else Decimal("0.00")
+        )
+
+        monthly_breakdown = []
+        year, month = now.year, now.month
+        for _ in range(7):
+            m_start, m_end = self._month_boundaries(year, month)
+            consumption_units = _consumption_for_qs(
+                reading_logs.filter(recorded_at__gte=m_start, recorded_at__lt=m_end)
+            )
+            billed = consumption_units * unit_price
+            collected = payment_logs.filter(
+                payment_date__gte=m_start, payment_date__lt=m_end,
+            ).aggregate(
+                total=Coalesce(Sum("amount_paid"), Value(Decimal("0")))
+            )["total"]
+
+            monthly_breakdown.insert(0, {
+                "month": m_start.strftime("%b"),
+                "year": year,
+                "billed": float(round(billed, 2)),
+                "collected": float(round(collected, 2)),
+            })
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+
+        current_month_billed = total_consumption_current_month_units * unit_price
+
+        return {
+            "scope": "smart",
+            "expected_amount": str(round(expected_amount, 2)),
+            "total_amount_paid_raw": str(round(total_paid_raw, 2)),
+            "total_amount_to_be_paid": str(round(expected_amount, 2)),
+            "total_consumption_current_month_units": str(round(total_consumption_current_month_units, 2)),
+            "unpaid_amount": str(round(expected_amount, 2)),
+            "overpayment": abs(overpayment),
+            "total_bills": total_bills,
+            "total_customers": total_customers,
+            "customers_with_debt": customers_with_debt,
+            "total_paid_customers": customers_paid,
+            "payment_completion_rate": f"{round(payment_completion_rate, 2)}%",
+            "monthly_breakdown": monthly_breakdown,
+            "current_month_billed": str(round(current_month_billed, 2)),
+            "current_month_collected": str(round(total_paid_raw, 2)),
+        }
 
 
 import logging as _logging
