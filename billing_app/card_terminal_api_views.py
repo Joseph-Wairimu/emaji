@@ -1102,6 +1102,30 @@ class MpesaCallbackView(APIView):
         return Response({'received': True})
 
 
+STK_PUSH_TIMEOUT = timedelta(seconds=90)
+
+
+def _fail_if_stale_pending(topup):
+    """
+    If the M-Pesa webhook never arrives (customer cancelled, went out of signal,
+    insufficient balance without a clean callback, etc.) a pending request would
+    otherwise sit forever and leave the frontend polling with no feedback. Once a
+    request has been pending longer than a normal STK prompt lifetime, resolve it
+    to 'failed' locally so the next poll surfaces something to the user. If the
+    real webhook arrives after this point it's a no-op (webhook only acts on
+    status == 'pending').
+    """
+    from django.utils import timezone
+    if topup.status == 'pending' and timezone.now() - topup.created_at > STK_PUSH_TIMEOUT:
+        topup.status = 'failed'
+        topup.result_desc = topup.result_desc or (
+            'No response received from M-Pesa in time. The request may have been '
+            'cancelled, timed out, or the customer had insufficient balance.'
+        )
+        topup.save(update_fields=['status', 'result_desc'])
+    return topup
+
+
 class CardTerminalMpesaStatusView(APIView):
     """
     GET /api/card-terminal/mpesa/status/<checkout_request_id>/
@@ -1112,6 +1136,7 @@ class CardTerminalMpesaStatusView(APIView):
 
     def get(self, request, checkout_request_id):
         topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
+        topup = _fail_if_stale_pending(topup)
 
         return Response({
             'status': topup.status,

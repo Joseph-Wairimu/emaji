@@ -582,7 +582,9 @@ class BillingMpesaStatusView(APIView):
 
     def get(self, request, checkout_request_id):
         from django.shortcuts import get_object_or_404
+        from .card_terminal_api_views import _fail_if_stale_pending
         topup = get_object_or_404(MpesaTopupRequest, checkout_request_id=checkout_request_id)
+        topup = _fail_if_stale_pending(topup)
 
         return Response({
             'status': topup.status,
