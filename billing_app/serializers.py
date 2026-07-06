@@ -125,6 +125,7 @@ class MeterSerializer(serializers.ModelSerializer):
     site_id = serializers.UUIDField(write_only=True)
     customer_id = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
+    valve_status = serializers.SerializerMethodField()
 
     def get_customer_id(self, obj):
         try:
@@ -139,14 +140,22 @@ class MeterSerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    def get_valve_status(self, obj):
+        # Latest telemetry-reported valve state — same source SmartMeterStatusView
+        # uses (smart_readings is ordered by -reading_time, -received_at).
+        if obj.meter_type != 'SMART':
+            return None
+        latest = obj.smart_readings.first()
+        return latest.valve_status if latest else None
+
     class Meta:
         model = Meter
         fields = [
             'id', 'meter_number', 'meter_type', 'meter_address', 'imei',
             'site', 'installed_at', 'status', 'site_id',
-            'customer_id', 'customer_name',
+            'customer_id', 'customer_name', 'valve_status',
         ]
-        read_only_fields = ['site', 'customer_id', 'customer_name']
+        read_only_fields = ['site', 'customer_id', 'customer_name', 'valve_status']
 
 
 class UnitPriceSerializer(serializers.ModelSerializer):
