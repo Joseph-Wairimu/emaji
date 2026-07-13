@@ -80,10 +80,15 @@ class Meter(models.Model):
         ('MANUAL', 'Manual'),
         ('SMART', 'Smart'),
     ]
+    BACKEND_CHOICES = [
+        ('FENGBO_POLL', 'Fengbo self-hosted decoder (polls E-Maji for commands)'),
+        ('PREPAIDEMQX', 'Self-hosted prepaid EMQX service (E-Maji pushes commands to it)'),
+    ]
     meter_number = models.CharField(max_length=50, unique=True)
     meter_type = models.CharField(max_length=20, choices=METER_TYPES)
     meter_address = models.CharField(max_length=50, blank=True, null=True, unique=True)
     imei = models.CharField(max_length=50, blank=True, null=True)
+    backend = models.CharField(max_length=20, choices=BACKEND_CHOICES, default='FENGBO_POLL')
     site = models.ForeignKey(Site, on_delete=models.CASCADE)
     installed_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('INACTIVE', 'Inactive')])

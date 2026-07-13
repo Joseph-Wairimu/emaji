@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
 from dateutil import parser as date_parser
 
+import requests
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -59,10 +60,38 @@ def _to_m3(raw_value, unit: str) -> Decimal | None:
     return Decimal(str(raw_value)) * multiplier
 
 
+def _send_prepaidemqx_command(path: str, payload: dict) -> dict:
+    if not settings.PREPAIDEMQX_API_URL:
+        raise RuntimeError("PREPAIDEMQX_API_URL is not configured")
+    url = f"{settings.PREPAIDEMQX_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    resp = requests.post(url, json=payload, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _send_valve_command(meter: Meter, action: str, reason: str, wallet: PrepaidWallet | None = None):
     cmd = ValveCommand.objects.create(meter=meter, action=action, reason=reason, status="pending")
 
-    if settings.FENGBO_API_URL:
+    if meter.backend == "PREPAIDEMQX":
+        # This fleet doesn't poll E-Maji for commands — push straight to its command API.
+        try:
+            result = _send_prepaidemqx_command("commands/valve", {
+                "meter_address": meter.meter_address,
+                "imei": meter.imei,
+                "action": action,
+            })
+            cmd.status = "sent"
+            cmd.fengbo_response = result
+            cmd.sent_at = timezone.now()
+            if wallet is not None:
+                wallet.valve_status = "closed" if action == "close" else "open"
+            logger.info("Valve %s sent via prepaidemqx for %s", action, meter.meter_address)
+        except Exception as exc:
+            cmd.status = "failed"
+            logger.warning(
+                "prepaidemqx valve command failed for %s: %s", meter.meter_address, exc,
+            )
+    elif settings.FENGBO_API_URL:
         # Try Fengbo Cloud API (for meters registered on Fengbo's cloud platform).
         # If it fails or isn't configured, the command stays 'pending' and the
         # self-hosted TCP decoder will pick it up on the meter's next upload.
@@ -375,6 +404,7 @@ class PrepaidTopupView(APIView):
 
         valve_opened = False
         fengbo_payment_sync = None
+        prepaidemqx_recharge_sync = None
         meter = customer.meter
 
         if meter and meter.meter_address:
@@ -384,8 +414,24 @@ class PrepaidTopupView(APIView):
                 wallet.save()
                 valve_opened = True
 
-            # Sync payment to Fengbo Cloud (non-fatal if it fails)
-            if settings.FENGBO_API_URL:
+            if meter.backend == "PREPAIDEMQX":
+                # Mirror the top-up onto the meter's own onboard prepaid credit/display.
+                # E-Maji's wallet.balance_m3 stays the billing source of truth; this is
+                # a best-effort sync so the physical meter's balance_state agrees.
+                amount_units_100l = int(
+                    (m3_added * 1000 / Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+                if amount_units_100l > 0:
+                    try:
+                        prepaidemqx_recharge_sync = _send_prepaidemqx_command("commands/recharge", {
+                            "meter_address": meter.meter_address,
+                            "imei": meter.imei,
+                            "amount_litres": amount_units_100l * 100,
+                        })
+                    except Exception as exc:
+                        logger.warning("prepaidemqx recharge sync failed (non-fatal): %s", exc)
+            elif settings.FENGBO_API_URL:
+                # Sync payment to Fengbo Cloud (non-fatal if it fails)
                 try:
                     fengbo_payment_sync = FengboCloudService().record_payment(
                         meter.meter_address, float(amount_kes)
@@ -413,6 +459,7 @@ class PrepaidTopupView(APIView):
             ),
             "valve_opened": valve_opened,
             "fengbo_sync": fengbo_payment_sync,
+            "prepaidemqx_recharge_sync": prepaidemqx_recharge_sync,
         })
 
 

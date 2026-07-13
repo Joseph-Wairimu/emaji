@@ -147,6 +147,11 @@ FENGBO_AREA_NAME = config('FENGBO_AREA_NAME', default='')
 FENGBO_CHECK_CODE = config('FENGBO_CHECK_CODE', default='')
 SMART_METER_API_KEY = config('SMART_METER_API_KEY', default='')
 
+# Self-hosted prepaid meter service (prepaidemqx) — command API base URL.
+# Unlike the Fengbo fleet (which polls E-Maji for commands), this service
+# expects E-Maji to push commands to it directly.
+PREPAIDEMQX_API_URL = config('PREPAIDEMQX_API_URL', default='')
+
 
 # Card-swipe terminal integration
 CARD_TERMINAL_API_KEY = config('CARD_TERMINAL_API_KEY', default='')
