@@ -445,11 +445,15 @@ class AnalyticsView(APIView):
 
         total_bills = reading_logs.count()
         total_customers = customers.count()
+        total_wallets = wallets.count()
         customers_with_debt = wallets.filter(balance_m3__lte=0).count()
         customers_paid = wallets.filter(balance_m3__gt=0).count()
 
+        # customers_with_debt/customers_paid count at the wallet (meter) level, so the
+        # completion rate must divide by the wallet count too — dividing by total_customers
+        # would exceed 100% for any customer owning multiple meters.
         payment_completion_rate = (
-            (Decimal(customers_paid) / total_customers * 100) if total_customers > 0 else Decimal("0.00")
+            (Decimal(customers_paid) / total_wallets * 100) if total_wallets > 0 else Decimal("0.00")
         )
 
         monthly_breakdown = []
