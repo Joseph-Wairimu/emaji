@@ -266,11 +266,11 @@ class AnalyticsView(APIView):
 
     def _manual_scope(self, now, site_customers):
         """Postpaid / manually-read meters — BillingRecord + PaymentLog(billing_type=POSTPAID)."""
-        customers = site_customers.filter(meter__meter_type="MANUAL")
+        customers = site_customers.filter(meters__meter_type="MANUAL").distinct()
         billing_records = BillingRecord.objects.filter(customer__in=site_customers, meter__meter_type="MANUAL")
         payment_logs = PaymentLog.objects.filter(billing_type="POSTPAID").filter(
             Q(billing_record__customer__in=site_customers, billing_record__meter__meter_type="MANUAL") |
-            Q(billing_record__isnull=True, customer__in=site_customers, customer__meter__meter_type="MANUAL")
+            Q(billing_record__isnull=True, customer__in=site_customers, customer__meters__meter_type="MANUAL")
         )
 
         # ── Current month boundaries ────────────────────────────────────
