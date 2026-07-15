@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from .models import (
     BillingRecord, CardBinding, CardTerminalTransaction,
-    Customer, PaymentLog, PrepaidWallet, Role, UnitPrice, User,
+    Customer, PaymentLog, PrepaidWallet, SmartMeterWallet, Role, UnitPrice, User,
 )
 from .permissions import IsCustomer, IsAdmin, IsStaff
 from .views_card_terminal import _upsert_whitelist
@@ -46,7 +46,6 @@ class CustomerMeView(APIView):
 
     def get(self, request):
         customer = _get_customer(request)
-        meter = customer.meter
 
         # Postpaid billing summary
         latest_bill = BillingRecord.objects.filter(customer=customer).order_by('-reading_date').first()
@@ -60,20 +59,35 @@ class CustomerMeView(APIView):
                 'payment_status': latest_bill.payment_status,
             }
 
-        # Wallet
-        wallet_data = None
+        # Smart meters — each has its own independent prepaid wallet
+        unit_price = UnitPrice.objects.order_by('-effective_date').first()
+        meters_data = []
+        for meter in customer.meters.all():
+            wallet_data = None
+            try:
+                wallet = meter.wallet
+                balance_kes = None
+                if unit_price and unit_price.unit_price:
+                    balance_kes = str((wallet.balance_m3 * unit_price.unit_price).quantize(Decimal('0.01')))
+                wallet_data = {
+                    'balance_m3': str(wallet.balance_m3),
+                    'balance_kes': balance_kes,
+                    'valve_status': wallet.valve_status,
+                }
+            except SmartMeterWallet.DoesNotExist:
+                pass
+            meters_data.append({
+                'meter_id': str(meter.id),
+                'meter_number': meter.meter_number,
+                'meter_type': meter.meter_type,
+                'meter_address': meter.meter_address,
+                'wallet': wallet_data,
+            })
+
+        # Card-terminal wallet (KES, independent of any smart meter)
+        card_wallet_data = None
         try:
-            wallet = customer.wallet
-            unit_price = UnitPrice.objects.order_by('-effective_date').first()
-            balance_kes_fengbo = None
-            if unit_price and unit_price.unit_price:
-                balance_kes_fengbo = str((wallet.balance_m3 * unit_price.unit_price).quantize(Decimal('0.01')))
-            wallet_data = {
-                'balance_m3': str(wallet.balance_m3),
-                'balance_kes_fengbo': balance_kes_fengbo,
-                'balance_kes_card': str(wallet.balance_kes),
-                'valve_status': wallet.valve_status,
-            }
+            card_wallet_data = {'balance_kes': str(customer.wallet.balance_kes)}
         except PrepaidWallet.DoesNotExist:
             pass
 
@@ -95,10 +109,9 @@ class CustomerMeView(APIView):
             'account_status': customer.account_status,
             'usage_status': customer.usage_status,
             'site': customer.site.name if customer.site else None,
-            'meter_number': meter.meter_number if meter else None,
-            'meter_type': meter.meter_type if meter else None,
+            'meters': meters_data,
             'card_no': card_no,
-            'wallet': wallet_data,
+            'card_wallet': card_wallet_data,
             'latest_billing': billing_summary,
         })
 
@@ -181,10 +194,7 @@ class CustomerTopupView(APIView):
         except (ValueError, Exception):
             return Response({'error': 'amount_kes must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
 
-        wallet, _ = PrepaidWallet.objects.get_or_create(
-            customer=customer,
-            defaults={'balance_m3': Decimal('0'), 'last_known_flow_m3': Decimal('0'), 'valve_status': 'unknown'},
-        )
+        wallet, _ = PrepaidWallet.objects.get_or_create(customer=customer)
         wallet.balance_kes += amount_kes
         wallet.save(update_fields=['balance_kes', 'updated_at'])
 

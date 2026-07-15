@@ -15,8 +15,8 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, BasePermission
 
 from .models import (
-    Meter, Customer, UnitPrice,
-    SmartMeterReading, PrepaidWallet, ValveCommand,
+    Meter, UnitPrice,
+    SmartMeterReading, SmartMeterWallet, ValveCommand,
     ReadingLog, PaymentLog, MpesaTopupRequest,
 )
 from .permissions import IsAdmin
@@ -69,7 +69,7 @@ def _send_prepaidemqx_command(path: str, payload: dict) -> dict:
     return resp.json()
 
 
-def _send_valve_command(meter: Meter, action: str, reason: str, wallet: PrepaidWallet | None = None):
+def _send_valve_command(meter: Meter, action: str, reason: str, wallet: SmartMeterWallet | None = None):
     cmd = ValveCommand.objects.create(meter=meter, action=action, reason=reason, status="pending")
 
     if meter.backend == "PREPAIDEMQX":
@@ -123,9 +123,8 @@ def _snapshot_reading_log(meter: Meter, current_flow_m3: Decimal) -> None:
     only when the cumulative flow has actually increased.
     This is what surfaces smart meter readings in the /readings/ table.
     """
-    try:
-        customer = Customer.objects.get(meter=meter)
-    except Customer.DoesNotExist:
+    customer = meter.customer
+    if not customer:
         return  # No customer assigned — skip
 
     # At most one snapshot per 24-hour window per meter
@@ -141,9 +140,9 @@ def _snapshot_reading_log(meter: Meter, current_flow_m3: Decimal) -> None:
 
     # Determine whether this is a prepaid or postpaid smart meter
     try:
-        customer.wallet  # noqa: B018 — existence check
+        meter.wallet  # noqa: B018 — existence check
         billing_type = 'PREPAID'
-    except PrepaidWallet.DoesNotExist:
+    except SmartMeterWallet.DoesNotExist:
         billing_type = 'POSTPAID'
 
     ReadingLog.objects.create(
@@ -161,10 +160,11 @@ def _snapshot_reading_log(meter: Meter, current_flow_m3: Decimal) -> None:
 
 
 def _run_prepaid_logic(meter: Meter, current_flow_m3: Decimal, reported_valve_status: str | None):
+    if not meter.customer:
+        return
     try:
-        customer = Customer.objects.get(meter=meter)
-        wallet = customer.wallet
-    except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
+        wallet = meter.wallet
+    except SmartMeterWallet.DoesNotExist:
         return
 
     if reported_valve_status:
@@ -280,47 +280,47 @@ class SmartMeterStatusView(APIView):
             "prepaid": None,
         }
 
-        try:
-            customer = Customer.objects.get(meter=meter)
-            wallet = customer.wallet
-            unit_price = UnitPrice.objects.order_by("-effective_date").first()
-            balance_kes = None
-            if unit_price and unit_price.unit_price:
-                balance_kes = str(
-                    (wallet.balance_m3 * unit_price.unit_price).quantize(Decimal("0.01"))
-                )
-            # Use physical telemetry as the authoritative valve state
-            physical_valve_status = latest.valve_status or wallet.valve_status
-            if wallet.valve_status != physical_valve_status:
-                wallet.valve_status = physical_valve_status
-                wallet.save(update_fields=["valve_status"])
-            data["prepaid"] = {
-                "customer_id": str(customer.id),
-                "balance_m3": str(wallet.balance_m3),
-                "balance_kes": balance_kes,
-                "valve_status": physical_valve_status,
-                "last_updated": wallet.updated_at,
-            }
-        except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
-            pass
+        if meter.customer:
+            try:
+                wallet = meter.wallet
+                unit_price = UnitPrice.objects.order_by("-effective_date").first()
+                balance_kes = None
+                if unit_price and unit_price.unit_price:
+                    balance_kes = str(
+                        (wallet.balance_m3 * unit_price.unit_price).quantize(Decimal("0.01"))
+                    )
+                # Use physical telemetry as the authoritative valve state
+                physical_valve_status = latest.valve_status or wallet.valve_status
+                if wallet.valve_status != physical_valve_status:
+                    wallet.valve_status = physical_valve_status
+                    wallet.save(update_fields=["valve_status"])
+                data["prepaid"] = {
+                    "customer_id": str(meter.customer.id),
+                    "balance_m3": str(wallet.balance_m3),
+                    "balance_kes": balance_kes,
+                    "valve_status": physical_valve_status,
+                    "last_updated": wallet.updated_at,
+                }
+            except SmartMeterWallet.DoesNotExist:
+                pass
 
         return Response(data)
 
 
 class PrepaidWalletView(APIView):
     """
-    GET /api/prepaid/wallet/<customer_id>/
-    Returns wallet balance and status for a customer.
+    GET /api/prepaid/wallet/<meter_id>/
+    Returns wallet balance and status for one smart meter.
     """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, customer_id):
-        customer = get_object_or_404(Customer, id=customer_id)
+    def get(self, request, meter_id):
+        meter = get_object_or_404(Meter, id=meter_id)
         try:
-            wallet = customer.wallet
-        except PrepaidWallet.DoesNotExist:
+            wallet = meter.wallet
+        except SmartMeterWallet.DoesNotExist:
             return Response(
-                {"error": "No prepaid wallet for this customer"},
+                {"error": "No prepaid wallet for this meter"},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -332,19 +332,20 @@ class PrepaidWalletView(APIView):
             )
 
         # Sync valve_status from latest telemetry if available
-        try:
-            latest_reading = customer.meter.smart_readings.first()
-            if latest_reading and latest_reading.valve_status:
-                physical_status = latest_reading.valve_status
-                if wallet.valve_status != physical_status:
-                    wallet.valve_status = physical_status
-                    wallet.save(update_fields=["valve_status"])
-        except Exception:
-            pass
+        latest_reading = meter.smart_readings.first()
+        if latest_reading and latest_reading.valve_status:
+            physical_status = latest_reading.valve_status
+            if wallet.valve_status != physical_status:
+                wallet.valve_status = physical_status
+                wallet.save(update_fields=["valve_status"])
 
+        customer = meter.customer
         return Response({
-            "customer_id": str(customer.id),
-            "customer_name": f"{customer.first_name} {customer.last_name}",
+            "meter_id": str(meter.id),
+            "meter_number": meter.meter_number,
+            "meter_address": meter.meter_address,
+            "customer_id": str(customer.id) if customer else None,
+            "customer_name": f"{customer.first_name} {customer.last_name}" if customer else None,
             "balance_m3": str(wallet.balance_m3),
             "balance_kes": balance_kes,
             "valve_status": wallet.valve_status,
@@ -356,18 +357,18 @@ class PrepaidWalletView(APIView):
 class PrepaidTopupView(APIView):
     """
     POST /api/prepaid/topup/
-    Body: { "customer_id": "<uuid>", "amount_kes": <number> }
-    Adds credit, opens valve if balance was previously exhausted.
+    Body: { "meter_id": "<uuid>", "amount_kes": <number> }
+    Adds credit to that meter's wallet, opens valve if balance was previously exhausted.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        customer_id = request.data.get("customer_id")
+        meter_id = request.data.get("meter_id")
         amount_kes_raw = request.data.get("amount_kes")
 
-        if not customer_id or amount_kes_raw is None:
+        if not meter_id or amount_kes_raw is None:
             return Response(
-                {"error": "customer_id and amount_kes are required"},
+                {"error": "meter_id and amount_kes are required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -381,7 +382,10 @@ class PrepaidTopupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        customer = get_object_or_404(Customer, id=customer_id)
+        meter = get_object_or_404(Meter, id=meter_id)
+        customer = meter.customer
+        if not customer:
+            return Response({"error": "This meter has no customer assigned"}, status=status.HTTP_400_BAD_REQUEST)
 
         unit_price = UnitPrice.objects.order_by("-effective_date").first()
         if not unit_price or unit_price.unit_price <= 0:
@@ -389,9 +393,10 @@ class PrepaidTopupView(APIView):
 
         m3_added = amount_kes / unit_price.unit_price
 
-        wallet, _ = PrepaidWallet.objects.get_or_create(
-            customer=customer,
+        wallet, _ = SmartMeterWallet.objects.get_or_create(
+            meter=meter,
             defaults={
+                "customer": customer,
                 "balance_m3": Decimal("0"),
                 "last_known_flow_m3": Decimal("0"),
                 "valve_status": "unknown",
@@ -405,9 +410,8 @@ class PrepaidTopupView(APIView):
         valve_opened = False
         fengbo_payment_sync = None
         prepaidemqx_recharge_sync = None
-        meter = customer.meter
 
-        if meter and meter.meter_address:
+        if meter.meter_address:
             # Re-open valve if balance was exhausted and now positive
             if was_exhausted and wallet.balance_m3 > Decimal("0"):
                 _send_valve_command(meter, "open", "topup", wallet)
@@ -485,11 +489,11 @@ class ValveControlView(APIView):
 
         # Update wallet valve_status if prepaid
         wallet = None
-        try:
-            customer = Customer.objects.get(meter=meter)
-            wallet = customer.wallet
-        except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
-            pass
+        if meter.customer:
+            try:
+                wallet = meter.wallet
+            except SmartMeterWallet.DoesNotExist:
+                pass
 
         _send_valve_command(meter, action, "manual", wallet)
         if wallet:
@@ -584,13 +588,13 @@ class SmartMeterCommandAcknowledgeView(APIView):
         cmd.save()
 
         # Sync wallet valve_status to what the meter physically confirmed
-        try:
-            customer = Customer.objects.get(meter=meter)
-            wallet = customer.wallet
-            wallet.valve_status = "closed" if cmd.action == "close" else "open"
-            wallet.save()
-        except (Customer.DoesNotExist, PrepaidWallet.DoesNotExist):
-            pass
+        if meter.customer:
+            try:
+                wallet = meter.wallet
+                wallet.valve_status = "closed" if cmd.action == "close" else "open"
+                wallet.save()
+            except SmartMeterWallet.DoesNotExist:
+                pass
 
         logger.info(
             "Valve command '%s' acknowledged by meter %s", cmd.action, meter_address
@@ -601,20 +605,21 @@ class SmartMeterCommandAcknowledgeView(APIView):
 class PrepaidMpesaInitiateView(APIView):
     """
     POST /api/prepaid/mpesa/initiate/
-    Body: { "customer_id": "<uuid>", "amount_kes": <number>, "phone_number": "07XXXXXXXX" }
+    Body: { "meter_id": "<uuid>", "amount_kes": <number>, "phone_number": "07XXXXXXXX" }
     Initiates an M-Pesa STK push for a prepaid smart meter top-up.
-    The callback credits balance_m3, re-opens the valve, and records a PREPAID PaymentLog.
+    The callback credits that meter's SmartMeterWallet, re-opens the valve,
+    and records a PREPAID PaymentLog.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        customer_id = request.data.get('customer_id')
+        meter_id = request.data.get('meter_id')
         amount_raw = request.data.get('amount_kes')
         phone = str(request.data.get('phone_number', '')).strip()
 
-        if not customer_id or amount_raw is None or not phone:
+        if not meter_id or amount_raw is None or not phone:
             return Response(
-                {'error': 'customer_id, amount_kes, and phone_number are required'},
+                {'error': 'meter_id, amount_kes, and phone_number are required'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -634,9 +639,12 @@ class PrepaidMpesaInitiateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        customer = get_object_or_404(Customer, id=customer_id)
+        meter = get_object_or_404(Meter, id=meter_id)
+        customer = meter.customer
+        if not customer:
+            return Response({'error': 'This meter has no customer assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-        external_id = f'PREPAID-{str(customer_id)[:8]}'
+        external_id = f'PREPAID-{str(meter_id)[:8]}'
 
         try:
             from .services.merchant_api import MerchantApiService
@@ -644,20 +652,21 @@ class PrepaidMpesaInitiateView(APIView):
             transaction = svc.initiate_stk_push(
                 phone=phone,
                 amount=amount_kes,
-                account_reference=f'EMAJI-{str(customer_id)[:7].upper()}',
+                account_reference=f'EMAJI-{str(customer.id)[:7].upper()}',
                 transaction_desc='Water Top-Up',
                 external_id=external_id,
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception:
-            logger.exception('M-Pesa STK initiation failed for prepaid customer %s', customer_id)
+            logger.exception('M-Pesa STK initiation failed for prepaid meter %s', meter_id)
             return Response({'error': 'M-Pesa service error'}, status=status.HTTP_502_BAD_GATEWAY)
 
         checkout_request_id = transaction.get('id', '')
 
         MpesaTopupRequest.objects.create(
             customer=customer,
+            meter=meter,
             topup_type='prepaid',
             amount_kes=amount_kes,
             phone_number=phone,

@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.http import HttpResponse
 from django.db import models as django_models
-from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog, MpesaTopupRequest, PrepaidWallet
+from .models import User, Role, Site, SiteAssignment, Customer, Meter, UnitPrice, BillingRecord, PaymentLog, ReadingLog, MpesaTopupRequest, SmartMeterWallet
 from .serializers import (
     UserSerializer, RoleSerializer, SiteSerializer, SiteAssignmentSerializer,
     CustomerSerializer, MeterSerializer, UnitPriceSerializer,
@@ -381,7 +381,12 @@ class AnalyticsView(APIView):
         }
 
     def _smart_scope(self, now, site_customers):
-        """Prepaid smart meters — PrepaidWallet.balance_m3 + ReadingLog/PaymentLog(billing_type=PREPAID).
+        """Prepaid smart meters — SmartMeterWallet.balance_m3 (per meter) + ReadingLog/PaymentLog(billing_type=PREPAID).
+
+        A customer can own multiple smart meters, each with its own SmartMeterWallet, so
+        "customers_with_debt"/"total_paid_customers" below count at the wallet (meter) level,
+        not the customer level — a customer with two meters, one in debt and one paid, counts
+        as one of each. For the common single-meter customer this is unchanged from before.
 
         billing_type=PREPAID is NOT exclusive to smart-meter (balance_m3) top-ups — a customer
         can also hold a card-terminal binding, and card-terminal top-ups (balance_kes) are
@@ -394,13 +399,13 @@ class AnalyticsView(APIView):
         unit_price_obj = UnitPrice.objects.order_by("-effective_date").first()
         unit_price = unit_price_obj.unit_price if unit_price_obj else Decimal("0")
 
-        customers = site_customers.filter(meter__meter_type="SMART")
+        customers = site_customers.filter(meters__meter_type="SMART").distinct()
         reading_logs = ReadingLog.objects.filter(billing_type="PREPAID", customer__in=customers)
         payment_logs = PaymentLog.objects.filter(billing_type="PREPAID", customer__in=customers).exclude(
             Q(transaction_reference__startswith="CUST-TOPUP-") |
             Q(transaction_reference__startswith="CT-TOPUP-")
         )
-        wallets = PrepaidWallet.objects.filter(customer__in=customers)
+        wallets = SmartMeterWallet.objects.filter(customer__in=customers)
 
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         if now.month == 12:

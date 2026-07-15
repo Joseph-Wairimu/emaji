@@ -87,25 +87,32 @@ class CustomerSerializer(serializers.ModelSerializer):
     latest_billing = serializers.SerializerMethodField()
     site = serializers.CharField(source='site.name', read_only=True)
     site_id = serializers.UUIDField()
-    meter= serializers.CharField(source='meter.meter_number', read_only=True)
-    meter_id = serializers.UUIDField()
+    # A customer can own multiple meters now — ownership is assigned from the
+    # meter's own form (MeterSerializer.customer), not here. Read-only list.
+    meters = serializers.SerializerMethodField()
     user_email = serializers.SerializerMethodField()
 
     def get_user_email(self, obj):
         return obj.user.email if obj.user_id else None
 
+    def get_meters(self, obj):
+        return [
+            {'id': str(m.id), 'meter_number': m.meter_number, 'meter_address': m.meter_address}
+            for m in obj.meters.all()
+        ]
+
     class Meta:
         model = Customer
         fields = ['id', 'first_name', 'last_name', 'phone', 'email', 'plot_no', 'court_name',
-                  'usage_status', 'account_status', 'site', 'meter', 'created_by', 'created_at',
-                  'latest_billing', 'site_id', 'meter_id', 'user_email']
+                  'usage_status', 'account_status', 'site', 'meters', 'created_by', 'created_at',
+                  'latest_billing', 'site_id', 'user_email']
         extra_kwargs = {
             'email': {'required': False, 'allow_blank': True},
             'plot_no': {'required': False, 'allow_blank': True},
             'court_name': {'required': False, 'allow_blank': True},
         }
         read_only_fields = [
-           'site','meter'
+           'site', 'meters'
         ]
 
     def get_latest_billing(self, obj):
@@ -123,6 +130,9 @@ class CustomerSerializer(serializers.ModelSerializer):
 class MeterSerializer(serializers.ModelSerializer):
     site = serializers.CharField(source='site.name', read_only=True)
     site_id = serializers.UUIDField(write_only=True)
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(), required=False, allow_null=True, write_only=True,
+    )
     customer_id = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
     valve_status = serializers.SerializerMethodField()
@@ -151,9 +161,9 @@ class MeterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Meter
         fields = [
-            'id', 'meter_number', 'meter_type', 'meter_address', 'imei',
+            'id', 'meter_number', 'meter_type', 'meter_address', 'imei', 'backend',
             'site', 'installed_at', 'status', 'site_id',
-            'customer_id', 'customer_name', 'valve_status',
+            'customer', 'customer_id', 'customer_name', 'valve_status',
         ]
         read_only_fields = ['site', 'customer_id', 'customer_name', 'valve_status']
 
@@ -168,13 +178,18 @@ class BillingRecordSerializer(serializers.ModelSerializer):
     meter = serializers.CharField(source="meter.meter_number", read_only=True)
     meter_id = serializers.UUIDField(source="meter.id", read_only=True)
     customer_name = serializers.CharField(source="customer.first_name", read_only=True)
+    # Write-only: which of the customer's meters this reading is for. Required
+    # when the customer owns more than one meter; auto-derived otherwise.
+    meter_selection = serializers.PrimaryKeyRelatedField(
+        queryset=Meter.objects.all(), write_only=True, required=False, allow_null=True,
+    )
 
     class Meta:
         model = BillingRecord
         fields = [
             "id", "customer", "meter", "past_reading", "current_reading", "reading_date",
             "amount_due", "amount_paid", "balance", "unit_price_used",
-            "payment_status", "created_by", "created_at", "meter_id",
+            "payment_status", "created_by", "created_at", "meter_id", "meter_selection",
             "customer_name", "previous_balance", "current_reading_amount","current_amount_paid","updated_at"
         ]
         read_only_fields = [
@@ -234,15 +249,28 @@ class BillingRecordSerializer(serializers.ModelSerializer):
 
         return data
 
+    def _resolve_meter(self, customer, validated_data, instance=None):
+        selected = validated_data.pop("meter_selection", None)
+        if selected:
+            if selected.customer_id != customer.id:
+                raise serializers.ValidationError({"meter_selection": "That meter does not belong to the selected customer."})
+            return selected
+        if instance and instance.meter and instance.meter.customer_id == customer.id:
+            return instance.meter
+        customer_meters = list(customer.meters.all())
+        if not customer_meters:
+            raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+        if len(customer_meters) > 1:
+            raise serializers.ValidationError({"meter_selection": "Customer has multiple meters — meter_selection is required."})
+        return customer_meters[0]
+
     @transaction.atomic
     def create(self, validated_data):
         request_user = self.context["request"].user
         validated_data["created_by"] = request_user
 
         customer = validated_data["customer"]
-        meter = customer.meter
-        if not meter:
-            raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+        meter = self._resolve_meter(customer, validated_data)
         validated_data["meter"] = meter
 
         existing_billing = customer.billingrecord_set.order_by("-reading_date").first()
@@ -297,9 +325,9 @@ class BillingRecordSerializer(serializers.ModelSerializer):
         old_amount_paid = instance.amount_paid
 
         customer = validated_data.get("customer", instance.customer)
-        meter = customer.meter
-        if not meter:
-            raise serializers.ValidationError({"customer": "Selected customer has no linked meter."})
+        # create() may have already resolved this and delegated here — don't re-resolve
+        # (a second pass could silently drop an explicit meter_selection).
+        meter = validated_data["meter"] if "meter" in validated_data else self._resolve_meter(customer, validated_data, instance=instance)
         validated_data["meter"] = meter
 
         new_current_reading = validated_data.get("current_reading", old_current_reading)

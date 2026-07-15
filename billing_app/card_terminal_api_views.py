@@ -297,9 +297,6 @@ def _auto_import_nuomiy_cardholder(c: dict) -> 'CardBinding | None':
             PrepaidWallet.objects.create(
                 customer=customer,
                 balance_kes=cash_balance,
-                balance_m3=Decimal('0'),
-                last_known_flow_m3=Decimal('0'),
-                valve_status='unknown',
             )
             binding = CardBinding.objects.create(
                 card_no=card_no,
@@ -770,10 +767,7 @@ class CardTerminalTopupView(APIView):
 
         customer = get_object_or_404(Customer, id=customer_id)
 
-        wallet, _ = PrepaidWallet.objects.get_or_create(
-            customer=customer,
-            defaults={'balance_m3': Decimal('0'), 'last_known_flow_m3': Decimal('0'), 'valve_status': 'unknown'},
-        )
+        wallet, _ = PrepaidWallet.objects.get_or_create(customer=customer)
         wallet.balance_kes += amount_kes
         wallet.save(update_fields=['balance_kes', 'updated_at'])
 
@@ -1011,16 +1005,18 @@ class MpesaCallbackView(APIView):
                     logger.info('M-Pesa billing payment success: %s KES %s → billing %s receipt %s',
                                 checkout_request_id, topup.amount_kes, topup.billing_record_id, topup.mpesa_receipt_number)
 
-                elif topup.topup_type == 'prepaid' and topup.customer:
-                    # Prepaid smart meter top-up — credits balance_m3, not balance_kes
-                    from .models import UnitPrice
+                elif topup.topup_type == 'prepaid' and topup.meter:
+                    # Prepaid smart meter top-up — credits this meter's SmartMeterWallet
+                    from .models import UnitPrice, SmartMeterWallet
                     from .smart_meter_views import _send_valve_command
+                    meter = topup.meter
                     unit_price = UnitPrice.objects.order_by('-effective_date').first()
                     if unit_price and unit_price.unit_price > 0:
                         with db_transaction.atomic():
-                            wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
-                                customer=topup.customer,
+                            wallet, _ = SmartMeterWallet.objects.select_for_update().get_or_create(
+                                meter=meter,
                                 defaults={
+                                    'customer': topup.customer,
                                     'balance_m3': Decimal('0'),
                                     'last_known_flow_m3': Decimal('0'),
                                     'valve_status': 'unknown',
@@ -1033,8 +1029,7 @@ class MpesaCallbackView(APIView):
 
                             if was_exhausted and wallet.balance_m3 > Decimal('0'):
                                 try:
-                                    meter = topup.customer.meter
-                                    if meter and meter.meter_address:
+                                    if meter.meter_address:
                                         _send_valve_command(meter, 'open', 'topup', wallet)
                                         wallet.save()
                                 except Exception:
@@ -1048,8 +1043,8 @@ class MpesaCallbackView(APIView):
                                 transaction_reference=ref,
                                 created_by=topup.created_by,
                             )
-                    logger.info('M-Pesa prepaid topup success: %s KES %s → customer %s receipt %s',
-                                checkout_request_id, topup.amount_kes, topup.customer_id, topup.mpesa_receipt_number)
+                    logger.info('M-Pesa prepaid topup success: %s KES %s → meter %s receipt %s',
+                                checkout_request_id, topup.amount_kes, topup.meter_id, topup.mpesa_receipt_number)
 
                 elif topup.customer:
                     # Card terminal wallet top-up
@@ -1057,11 +1052,6 @@ class MpesaCallbackView(APIView):
                     with db_transaction.atomic():
                         wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
                             customer=topup.customer,
-                            defaults={
-                                'balance_m3': Decimal('0'),
-                                'last_known_flow_m3': Decimal('0'),
-                                'valve_status': 'unknown',
-                            },
                         )
                         wallet.balance_kes += topup.amount_kes
                         wallet.save(update_fields=['balance_kes', 'updated_at'])
@@ -1258,11 +1248,6 @@ class MpesaC2BConfirmationView(APIView):
                 with db_transaction.atomic():
                     wallet, _ = PrepaidWallet.objects.select_for_update().get_or_create(
                         customer=customer,
-                        defaults={
-                            'balance_m3': Decimal('0'),
-                            'last_known_flow_m3': Decimal('0'),
-                            'valve_status': 'unknown',
-                        },
                     )
                     wallet.balance_kes += amount_kes
                     wallet.save(update_fields=['balance_kes', 'updated_at'])

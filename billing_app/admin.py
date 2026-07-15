@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     User, Role, Site, SiteAssignment, Customer, Meter,
     UnitPrice, BillingRecord, PaymentLog, ReadingLog,
-    SmartMeterReading, PrepaidWallet, ValveCommand,
+    SmartMeterReading, PrepaidWallet, SmartMeterWallet, ValveCommand,
     CardTerminalDevice, CardBinding,
     CardTerminalTransaction, CardTerminalWhitelistEntry,
 )
@@ -39,9 +39,9 @@ class CustomerAdmin(admin.ModelAdmin):
 
 @admin.register(Meter)
 class MeterAdmin(admin.ModelAdmin):
-    list_display = ['meter_number', 'meter_type', 'meter_address', 'status', 'site']
-    search_fields = ['meter_number', 'meter_address']
-    list_filter = ['meter_type', 'status']
+    list_display = ['meter_number', 'meter_type', 'meter_address', 'customer', 'backend', 'status', 'site']
+    search_fields = ['meter_number', 'meter_address', 'customer__first_name', 'customer__last_name']
+    list_filter = ['meter_type', 'backend', 'status']
 
 
 @admin.register(UnitPrice)
@@ -78,8 +78,14 @@ class SmartMeterReadingAdmin(admin.ModelAdmin):
 
 @admin.register(PrepaidWallet)
 class PrepaidWalletAdmin(admin.ModelAdmin):
-    list_display = ['customer', 'balance_m3', 'balance_kes', 'valve_status', 'updated_at']
+    list_display = ['customer', 'balance_kes', 'updated_at']
     search_fields = ['customer__first_name', 'customer__last_name']
+
+
+@admin.register(SmartMeterWallet)
+class SmartMeterWalletAdmin(admin.ModelAdmin):
+    list_display = ['meter', 'customer', 'balance_m3', 'valve_status', 'updated_at']
+    search_fields = ['meter__meter_number', 'meter__meter_address', 'customer__first_name', 'customer__last_name']
 
 
 @admin.register(ValveCommand)

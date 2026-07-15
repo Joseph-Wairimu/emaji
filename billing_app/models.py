@@ -61,7 +61,6 @@ class Customer(models.Model):
     usage_status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('INACTIVE', 'Inactive')])
     account_status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('SUSPENDED', 'Suspended')])
     site = models.ForeignKey(Site, on_delete=models.CASCADE)
-    meter = models.OneToOneField('Meter', on_delete=models.SET_NULL, null=True, blank=True)
     # Portal login — staff creates a User with role=CUSTOMER and links it here
     user = models.OneToOneField(
         'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='customer_profile'
@@ -89,6 +88,9 @@ class Meter(models.Model):
     meter_address = models.CharField(max_length=50, blank=True, null=True, unique=True)
     imei = models.CharField(max_length=50, blank=True, null=True)
     backend = models.CharField(max_length=20, choices=BACKEND_CHOICES, default='FENGBO_POLL')
+    customer = models.ForeignKey(
+        'Customer', on_delete=models.SET_NULL, null=True, blank=True, related_name='meters'
+    )
     site = models.ForeignKey(Site, on_delete=models.CASCADE)
     installed_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=20, choices=[('ACTIVE', 'Active'), ('INACTIVE', 'Inactive')])
@@ -226,17 +228,31 @@ class SmartMeterReading(models.Model):
 
 
 class PrepaidWallet(models.Model):
+    """Card-terminal wallet (NFC card payments). Customer-scoped — a physical
+    card belongs to a person, not to any particular meter. Smart-meter prepaid
+    balances live on SmartMeterWallet instead, since a customer can own
+    multiple meters, each with its own independent balance/valve state."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name='wallet')
-    balance_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
-    last_known_flow_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
-    valve_status = models.CharField(max_length=20, default='unknown')
-    # Card terminal balance (KES) — independent of Fengbo m³ balance
     balance_kes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Wallet: {self.customer} — {self.balance_m3} m³"
+        return f"Card Wallet: {self.customer} — KES {self.balance_kes}"
+
+
+class SmartMeterWallet(models.Model):
+    """Prepaid balance/valve state for one physical smart meter."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    meter = models.OneToOneField(Meter, on_delete=models.CASCADE, related_name='wallet')
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='meter_wallets')
+    balance_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
+    last_known_flow_m3 = models.DecimalField(max_digits=18, decimal_places=6, default=0)
+    valve_status = models.CharField(max_length=20, default='unknown')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Meter Wallet: {self.meter} — {self.balance_m3} m³"
 
 
 class ValveCommand(models.Model):
@@ -375,6 +391,10 @@ class MpesaTopupRequest(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_topups')
     billing_record = models.ForeignKey('BillingRecord', on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_payments')
+    meter = models.ForeignKey(
+        'Meter', on_delete=models.SET_NULL, null=True, blank=True, related_name='mpesa_topups',
+        help_text='Set for topup_type=prepaid — which smart meter this top-up credits.',
+    )
     topup_type = models.CharField(max_length=20, choices=TOPUP_TYPE_CHOICES, default='card_terminal')
     amount_kes = models.DecimalField(max_digits=12, decimal_places=2)
     phone_number = models.CharField(max_length=20)

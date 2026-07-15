@@ -181,10 +181,7 @@ def consum_transactions(request):
         return _protocol_response({'Status': 0, 'Msg': 'No Card'})
 
     customer = binding.customer
-    wallet, _ = PrepaidWallet.objects.get_or_create(
-        customer=customer,
-        defaults={'balance_m3': Decimal('0'), 'last_known_flow_m3': Decimal('0'), 'valve_status': 'unknown'},
-    )
+    wallet, _ = PrepaidWallet.objects.get_or_create(customer=customer)
 
     # ── Mode=1: Balance inquiry ──────────────────────────────────────────────
     if mode == 1:
@@ -335,10 +332,7 @@ def offline_transactions(request):
             return _protocol_response({'Status': 0, 'Msg': 'No Card'})
 
         customer = binding.customer
-        wallet = PrepaidWallet.objects.select_for_update().get_or_create(
-            customer=customer,
-            defaults={'balance_m3': Decimal('0'), 'last_known_flow_m3': Decimal('0'), 'valve_status': 'unknown'},
-        )[0]
+        wallet = PrepaidWallet.objects.select_for_update().get_or_create(customer=customer)[0]
 
         # Terminal pre-authorized this offline spend — deduct; allow going negative
         wallet.balance_kes -= money
