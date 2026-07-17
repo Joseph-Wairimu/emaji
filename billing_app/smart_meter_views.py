@@ -167,7 +167,7 @@ def _run_prepaid_logic(meter: Meter, current_flow_m3: Decimal, reported_valve_st
     except SmartMeterWallet.DoesNotExist:
         return
 
-    if reported_valve_status:
+    if reported_valve_status and reported_valve_status != "unknown":
         wallet.valve_status = reported_valve_status
 
     # First real reading — set baseline, no deduction yet
@@ -262,6 +262,17 @@ class SmartMeterStatusView(APIView):
         if not latest:
             return Response({"error": "No readings available yet"}, status=status.HTTP_404_NOT_FOUND)
 
+        # Not every telemetry report carries valve data — fall back to the
+        # most recent reading that actually reported one, rather than
+        # letting a valve-less report (or a stale "unknown" placeholder
+        # from older ingests) blank out the last known state.
+        last_known_valve_status = latest.valve_status
+        if not last_known_valve_status or last_known_valve_status == "unknown":
+            valve_reading = meter.smart_readings.exclude(
+                valve_status__isnull=True
+            ).exclude(valve_status__in=["", "unknown"]).first()
+            last_known_valve_status = valve_reading.valve_status if valve_reading else None
+
         data = {
             "meter_address": meter_address,
             "meter_number": meter.meter_number,
@@ -269,7 +280,7 @@ class SmartMeterStatusView(APIView):
             "reading_time": latest.reading_time,
             "received_at": latest.received_at,
             "total_flow_m3": str(latest.total_flow_m3) if latest.total_flow_m3 is not None else None,
-            "valve_status": latest.valve_status,
+            "valve_status": last_known_valve_status,
             "battery_voltage_v": latest.battery_voltage_v,
             "csq": latest.csq,
             "no_water_alarm": latest.no_water_alarm,
@@ -290,7 +301,7 @@ class SmartMeterStatusView(APIView):
                         (wallet.balance_m3 * unit_price.unit_price).quantize(Decimal("0.01"))
                     )
                 # Use physical telemetry as the authoritative valve state
-                physical_valve_status = latest.valve_status or wallet.valve_status
+                physical_valve_status = last_known_valve_status or wallet.valve_status
                 if wallet.valve_status != physical_valve_status:
                     wallet.valve_status = physical_valve_status
                     wallet.save(update_fields=["valve_status"])
