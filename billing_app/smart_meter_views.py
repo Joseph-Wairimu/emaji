@@ -513,6 +513,56 @@ class ValveControlView(APIView):
         return Response({"status": "ok", "action": action, "meter_address": meter_address})
 
 
+class ReportIntervalView(APIView):
+    """
+    POST /api/smart-meter/report-interval/
+    Body: { "meter_address": "...", "minutes": 15 }
+          or { "meter_address": "...", "hours": 12, "start_hour": 6 }
+    Admin only. PREPAIDEMQX meters only — controls how often the meter checks in
+    for pending commands (valve, recharge, ...), which is what makes those feel
+    closer to real-time. Shorter interval = faster commands, more battery drain.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        meter_address = request.data.get("meter_address")
+        minutes = request.data.get("minutes")
+        hours = request.data.get("hours")
+        start_hour = request.data.get("start_hour")
+
+        if not meter_address or (minutes is None) == (hours is None):
+            return Response(
+                {"error": "meter_address and exactly one of minutes/hours are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        meter = get_object_or_404(Meter, meter_address=meter_address)
+        if meter.backend != "PREPAIDEMQX":
+            return Response(
+                {"error": "Report interval control is only available for PREPAIDEMQX meters"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = {"meter_address": meter.meter_address, "imei": meter.imei}
+        if minutes is not None:
+            payload["minutes"] = minutes
+        else:
+            payload["hours"] = hours
+            if start_hour is not None:
+                payload["start_hour"] = start_hour
+
+        try:
+            result = _send_prepaidemqx_command("commands/report-interval", payload)
+        except Exception as exc:
+            logger.warning("prepaidemqx report-interval failed for %s: %s", meter_address, exc)
+            return Response(
+                {"error": "Failed to queue report-interval command"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"status": "ok", "meter_address": meter_address, "result": result})
+
+
 # ---------------------------------------------------------------------------
 # Decoder-facing command queue endpoints (SmartMeterKeyPermission, no JWT)
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from .smart_meter_views import (
     PrepaidTopupView,
     PrepaidMpesaInitiateView,
     ValveControlView,
+    ReportIntervalView,
     SmartMeterCommandPendingView,
     SmartMeterCommandUpdateView,
     SmartMeterCommandAcknowledgeView,
@@ -63,6 +64,7 @@ urlpatterns = [
     path('smart-meter/ingest/', SmartMeterIngestView.as_view(), name='smart-meter-ingest'),
     path('smart-meter/status/<str:meter_address>/', SmartMeterStatusView.as_view(), name='smart-meter-status'),
     path('smart-meter/valve/', ValveControlView.as_view(), name='smart-meter-valve'),
+    path('smart-meter/report-interval/', ReportIntervalView.as_view(), name='smart-meter-report-interval'),
 
     # Decoder-facing command queue endpoints (API key auth, no JWT)
     path('smart-meter/commands/pending/<str:meter_address>/', SmartMeterCommandPendingView.as_view(), name='smart-meter-commands-pending'),
